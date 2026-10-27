@@ -530,3 +530,79 @@ test('backup and restore verify checksums and recover a board into a new directo
   await rm(folder, { recursive: true, force: true });
   await rm(dir, { recursive: true, force: true });
 });
+
+test('single canvas migration preserves old pages and is idempotent; background respects access rights', async () => {
+  const b = (
+    await request('POST', '/boards', { title: 'Все материалы на холсте', studentId: student.id })
+  ).body;
+  const first = (await request('GET', `/boards/${b.id}`)).body.pages[0];
+  const second = (
+    await request('POST', `/boards/${b.id}/pages`, { title: 'Старая вторая страница' })
+  ).body;
+  const a = element(),
+    c = element();
+  for (const [p, e] of [
+    [first, a],
+    [second, c],
+  ])
+    assert.equal(
+      (
+        await request('POST', `/pages/${p.id}/operations`, {
+          operationId: randomUUID(),
+          changes: [{ element: e, baseVersion: null }],
+        })
+      ).status,
+      200,
+    );
+  const before = (await request('GET', `/pages/${second.id}/snapshot`)).body;
+  const migrated = await request('POST', `/boards/${b.id}/canvas`, {});
+  assert.equal(migrated.status, 200);
+  assert.equal(migrated.body.canvas_page_id, first.id);
+  const snapshot = (await request('GET', `/pages/${first.id}/snapshot`)).body;
+  assert.equal(snapshot.scene.filter((e: any) => !e.isDeleted).length, 2);
+  const again = await request('POST', `/boards/${b.id}/canvas`, {});
+  assert.equal(again.body.canvas_page_id, first.id);
+  assert.equal(
+    (await request('GET', `/pages/${first.id}/snapshot`)).body.revision,
+    snapshot.revision,
+  );
+  assert.deepEqual((await request('GET', `/pages/${second.id}/snapshot`)).body, before);
+  assert.equal(
+    (
+      await request('POST', `/pages/${second.id}/operations`, {
+        operationId: randomUUID(),
+        changes: [{ element: element(), baseVersion: null }],
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (await request('POST', `/boards/${b.id}/pages`, { title: 'Ненужная страница' })).status,
+    409,
+  );
+  assert.equal((await request('DELETE', `/pages/${first.id}`)).status, 409);
+  assert.equal(
+    (await request('PATCH', `/boards/${b.id}`, { background: 'dots' }, studentCookie)).status,
+    200,
+  );
+  assert.equal((await request('GET', `/boards/${b.id}`)).body.background, 'dots');
+  const invitation = (
+    await request('POST', `/boards/${b.id}/invites`, { permission: 'view', hours: 1, maxUses: 1 })
+  ).body;
+  const viewer = (
+    await request(
+      'POST',
+      '/invites/redeem',
+      { token: new URL(invitation.url).hash.slice(1), name: 'Зритель общего холста' },
+      '',
+    )
+  ).cookie;
+  assert.equal(
+    (await request('PATCH', `/boards/${b.id}`, { background: 'grid' }, viewer)).status,
+    403,
+  );
+  assert.equal(
+    (await request('PATCH', `/boards/${b.id}`, { background: 'unsupported' })).status,
+    400,
+  );
+});

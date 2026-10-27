@@ -29,6 +29,16 @@ export type Board = {
   updated_at: string;
   permission?: 'admin' | 'edit' | 'view';
   pages?: Page[];
+  canvas_page_id?: string | null;
+  background?: BoardBackground;
+};
+export type BoardBackground = 'white' | 'grid' | 'ruled' | 'dots';
+export type PresentationSlide = { fileId: string; width: number; height: number };
+export type PresentationData = {
+  sourceId: string;
+  title: string;
+  slides: PresentationSlide[];
+  slideIndex: number;
 };
 export type Page = {
   id: string;

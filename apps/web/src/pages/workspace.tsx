@@ -369,7 +369,7 @@ export function BoardCard({
           <h3>{board.title}</h3>
           <p>{board.student_id ? studentName(board.student_id) : 'Моё пространство'}</p>
           <small className="muted">
-            {date(board.updated_at)} · {(board as any).page_count || board.pages?.length || 1} стр.
+            {date(board.updated_at)} · Общий холст
           </small>
         </Link>
         {actions}

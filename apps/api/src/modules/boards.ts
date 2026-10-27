@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Context } from '../app';
 import { boardAccess, requireThat, studentAccess, hashToken, token, audit } from '../security';
 import { sceneChangeSchema, type ElementData } from '../../../../packages/contracts';
+import { unifyLegacyScenes, presentationOf } from '../../../../packages/contracts/canvas';
 
 const idParam = (params: unknown, field: string) =>
   z.record(z.string(), z.string()).parse(params)[field];
@@ -63,32 +64,95 @@ export async function boardRoutes({ app, db, config, io }: Context) {
       ).rows,
     };
   });
+  app.post('/api/v1/boards/:id/canvas', async (req) => {
+    const id = uuidParam(req.params, 'id');
+    const accessible = await boardAccess(db, req.user, id);
+    if (accessible.canvas_page_id) return accessible;
+    requireThat(
+      accessible.owner_id === req.user.id,
+      409,
+      'Преподавателю нужно один раз открыть доску для перехода на общий холст',
+    );
+    const board = await db.transaction(async (tx) => {
+      const pages = (
+        await tx.query('SELECT * FROM pages WHERE board_id=$1 ORDER BY position,id FOR UPDATE', [
+          id,
+        ])
+      ).rows;
+      const board = (await tx.query('SELECT * FROM boards WHERE id=$1 FOR UPDATE', [id])).rows[0];
+      if (board.canvas_page_id) return board;
+      requireThat(pages.length, 404, 'Холст не найден');
+      const primary = pages[0],
+        scene = unifyLegacyScenes(pages);
+      requireThat(
+        scene.length <= 15000,
+        413,
+        'Слишком много объектов для объединения. Исходные страницы сохранены',
+      );
+      // Preserve the original first page as a recoverable version. Other source pages stay intact.
+      if (pages.length > 1 || primary.scene.length) {
+        await tx.query(
+          'INSERT INTO snapshots(id,page_id,revision,scene,author_id) VALUES($1,$2,$3,$4,$5)',
+          [randomUUID(), primary.id, primary.revision, JSON.stringify(primary.scene), req.user.id],
+        );
+        const prior = new Map<string, any>(primary.scene.map((e: any) => [e.id, e]));
+        for (const e of scene)
+          if (prior.has(e.id)) e.version = Math.max(e.version, prior.get(e.id).version + 1);
+        await tx.query('UPDATE pages SET scene=$2,revision=revision+1,title=$3 WHERE id=$1', [
+          primary.id,
+          JSON.stringify(scene),
+          'Холст',
+        ]);
+      }
+      await tx.query('UPDATE boards SET canvas_page_id=$2,updated_at=now() WHERE id=$1', [
+        id,
+        primary.id,
+      ]);
+      await audit(tx, req.user.id, 'board.canvas-migrated', id);
+      return { ...board, canvas_page_id: primary.id };
+    });
+    io.to(`board:${id}`).emit('canvas-updated', { boardId: id });
+    return { ...board, permission: accessible.permission };
+  });
   app.patch('/api/v1/boards/:id', async (req) => {
     const id = uuidParam(req.params, 'id');
     const board = await boardAccess(db, req.user, id);
-    requireThat(board.owner_id === req.user.id);
     const input = z
       .object({
         title: z.string().trim().min(1).max(200).optional(),
         archived: z.boolean().optional(),
+        background: z.enum(['white', 'grid', 'ruled', 'dots']).optional(),
+      })
+      .refine((value) => Object.values(value).some((field) => field !== undefined), {
+        message: 'Укажите изменяемое поле доски',
       })
       .parse(req.body);
+    if (input.title !== undefined || input.archived !== undefined)
+      requireThat(board.owner_id === req.user.id);
+    if (input.background !== undefined) await boardAccess(db, req.user, id, true);
     const updated = (
       await db.query(
-        'UPDATE boards SET title=COALESCE($2,title),archived=COALESCE($3,archived),updated_at=now() WHERE id=$1 RETURNING *',
-        [id, input.title ?? null, input.archived ?? null],
+        'UPDATE boards SET title=COALESCE($2,title),archived=COALESCE($3,archived),background=COALESCE($4,background),updated_at=now() WHERE id=$1 RETURNING *',
+        [id, input.title ?? null, input.archived ?? null, input.background ?? null],
       )
     ).rows[0];
     await audit(
       db,
       req.user.id,
-      input.archived === undefined
-        ? 'board.renamed'
-        : input.archived
-          ? 'board.archived'
-          : 'board.unarchived',
+      input.background !== undefined
+        ? 'board.background-changed'
+        : input.archived === undefined
+          ? 'board.renamed'
+          : input.archived
+            ? 'board.archived'
+            : 'board.unarchived',
       id,
     );
+    if (input.background !== undefined)
+      io.to(`board:${id}`).emit('board-background', {
+        boardId: id,
+        background: updated.background,
+      });
     if (input.archived)
       for (const socket of io.sockets.sockets.values())
         if (socket.data.boardId === id) {
@@ -101,6 +165,11 @@ export async function boardRoutes({ app, db, config, io }: Context) {
     const id = uuidParam(req.params, 'id');
     const board = await boardAccess(db, req.user, id, true);
     requireThat(board.owner_id === req.user.id);
+    requireThat(
+      !board.canvas_page_id,
+      409,
+      'На этой доске используется единый холст. Добавляйте материалы на него',
+    );
     const { title } = z.object({ title: z.string().trim().min(1).max(200) }).parse(req.body);
     const page = (
       await db.query(
@@ -137,6 +206,7 @@ export async function boardRoutes({ app, db, config, io }: Context) {
       requireThat(page, 404, 'Страница не найдена');
       const board = await boardAccess(tx, req.user, page.board_id, true);
       requireThat(board.owner_id === req.user.id);
+      requireThat(!board.canvas_page_id, 409, 'Единый холст нельзя удалить как страницу');
       await tx.query('SELECT id FROM boards WHERE id=$1 FOR UPDATE', [board.id]);
       const count = (
         await tx.query('SELECT count(*)::int AS n FROM pages WHERE board_id=$1', [board.id])
@@ -190,7 +260,12 @@ export async function boardRoutes({ app, db, config, io }: Context) {
     const result = await db.transaction(async (tx) => {
       const page = (await tx.query('SELECT * FROM pages WHERE id=$1 FOR UPDATE', [pageId])).rows[0];
       requireThat(page, 404, 'Страница не найдена');
-      await boardAccess(tx, req.user, page.board_id, true);
+      const board = await boardAccess(tx, req.user, page.board_id, true);
+      requireThat(
+        !board.canvas_page_id || board.canvas_page_id === pageId,
+        409,
+        'Доска перешла на единый холст. Перезагрузите её перед продолжением',
+      );
       const previous = (
         await tx.query('SELECT result FROM operations WHERE page_id=$1 AND operation_id=$2', [
           pageId,
@@ -225,7 +300,42 @@ export async function boardRoutes({ app, db, config, io }: Context) {
         scene.set(change.element.id, change.element);
         accepted.push(change.element);
       }
-      requireThat(scene.size <= 15000, 413, 'Достигнут лимит страницы: создайте новую');
+      requireThat(scene.size <= 15000, 413, 'Достигнут лимит холста: 15 000 объектов');
+      for (const e of accepted) {
+        const deck = presentationOf(e);
+        if (!deck || e.isDeleted) continue;
+        const metadata = z
+          .object({
+            sourceId: z.uuid(),
+            title: z.string().min(1).max(250),
+            slideIndex: z.number().int().min(0).max(29),
+            slides: z
+              .array(
+                z.object({
+                  fileId: z.string().min(1).max(128),
+                  width: z.number().positive().finite().max(20000),
+                  height: z.number().positive().finite().max(20000),
+                }),
+              )
+              .min(1)
+              .max(30),
+          })
+          .parse(deck);
+        requireThat(
+          metadata.slideIndex < metadata.slides.length &&
+            e.fileId === metadata.slides[metadata.slideIndex].fileId,
+          400,
+          'Некорректный слайд презентации',
+        );
+        const ids = [...new Set(metadata.slides.map((s) => s.fileId))];
+        const assets = (
+          await tx.query(
+            'SELECT excalidraw_id FROM files WHERE board_id=$1 AND excalidraw_id=ANY($2::text[])',
+            [page.board_id, ids],
+          )
+        ).rows;
+        requireThat(assets.length === ids.length, 400, 'Не все слайды презентации сохранены');
+      }
       const revision = page.revision + (accepted.length ? 1 : 0);
       if (accepted.length) {
         await tx.query(

@@ -85,8 +85,9 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   await page.screenshot({ path: testInfo.outputPath('desktop-dashboard.png'), fullPage: true });
   await page.goto(`/board/${board.id}`);
   await expect(page.locator('.excalidraw')).toBeVisible();
-  await page.getByRole('button', { name: 'Русский язык' }).click();
-  await page.getByRole('button', { name: 'Большой текст', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Русский язык', exact: true })).toHaveCount(0);
+  await expect(page.locator('.pages-sidebar')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Текст', exact: true }).click();
   await expect(page.locator('.save-state')).toContainText('Сохранено');
   const scene1 = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
   expect(scene1.scene.some((e: any) => e.type === 'text')).toBeTruthy();
@@ -98,8 +99,7 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   await guestPage.getByRole('button', { name: 'Открыть доску', exact: true }).click();
   await expect(guestPage.locator('.excalidraw')).toBeVisible();
   await expect(page.locator('.board-participant-count')).toContainText('2');
-  await guestPage.getByRole('button', { name: 'Русский язык' }).click();
-  await guestPage.getByRole('button', { name: 'Комментарий к ответу', exact: true }).click();
+  await guestPage.getByRole('button', { name: 'Заметка', exact: true }).click();
   await expect(guestPage.locator('.save-state')).toContainText('Сохранено');
   await expect
     .poll(async () => {
@@ -117,11 +117,11 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   await expect
     .poll(async () => {
       const data = await downloadScene();
-      return data.elements.some((e: any) => e.text?.includes('Комментарий преподавателя'));
+      return data.elements.some((e: any) => e.text?.includes('Идея, вопрос'));
     })
     .toBeTruthy();
   await guest.setOffline(true);
-  await guestPage.getByRole('button', { name: 'Подлежащее', exact: true }).click();
+  await guestPage.getByRole('button', { name: 'Текст', exact: true }).click();
   await expect(guestPage.locator('.save-state')).toContainText('Нет связи');
   await guest.setOffline(false);
   await expect(guestPage.locator('.save-state')).toContainText('Сохранено');
@@ -129,7 +129,7 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   await expect(guestPage.locator('.excalidraw')).toBeVisible();
   await expect(guestPage.locator('.save-state')).toContainText('Сохранено');
   const afterOffline = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
-  expect(afterOffline.scene.some((e: any) => e.type === 'line' && !e.isDeleted)).toBeTruthy();
+  expect(afterOffline.scene.filter((e: any) => e.type === 'text' && !e.isDeleted)).toHaveLength(3);
   await page.getByRole('button', { name: 'Шаг назад', exact: true }).click();
   await expect(page.locator('.save-state')).toContainText('Сохранено');
   await expect
@@ -137,39 +137,137 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
       const snapshot = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
       return snapshot.scene.filter((e: any) => e.type === 'text' && !e.isDeleted).length;
     })
-    .toBe(1);
+    .toBe(2);
   const afterUndo = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
   expect(
-    afterUndo.scene.some((e: any) => e.text?.includes('Комментарий преподавателя') && !e.isDeleted),
+    afterUndo.scene.some((e: any) => e.text?.includes('Идея, вопрос') && !e.isDeleted),
   ).toBeTruthy();
   await page.getByRole('button', { name: 'Шаг вперед', exact: true }).click();
   await expect(page.locator('.save-state')).toContainText('Сохранено');
   await page.screenshot({ path: testInfo.outputPath('desktop-board.png') });
-  // PDF pages are locked image backgrounds with independent persistent annotations.
+  // Background changes persist and reach other participants on the same canvas.
+  for (const [label, background] of [
+    ['Клетка', 'grid'],
+    ['Линии', 'ruled'],
+    ['Точки', 'dots'],
+    ['Белый холст', 'white'],
+  ]) {
+    await page.getByRole('button', { name: 'Фон', exact: true }).click();
+    await page.getByRole('button', { name: label, exact: true }).click();
+    await expect(page.locator('.canvas-paper')).toHaveAttribute('data-background', background);
+    await expect(guestPage.locator('.canvas-paper')).toHaveAttribute('data-background', background);
+  }
+  await page.getByRole('button', { name: 'Фон', exact: true }).click();
+  await page.getByRole('button', { name: 'Клетка', exact: true }).click();
+  // A PDF remains one movable object with slide navigation and per-slide annotations.
   const pdf = await PDFDocument.create();
   for (let i = 0; i < 2; i++) {
-    const p = pdf.addPage([595, 842]);
-    p.drawText(`Worksheet ${i + 1}`, { x: 60, y: 750, size: 24 });
+    const p = pdf.addPage([960, 540]);
+    p.drawText(`Physics ${i + 1}`, { x: 70, y: 440, size: 30 });
   }
   await page.locator('input[type=file][hidden]').setInputFiles({
-    name: 'Лист разбора.pdf',
+    name: 'Физика.pdf',
     mimeType: 'application/pdf',
     buffer: Buffer.from(await pdf.save()),
   });
   await expect(page.locator('.import-progress')).toBeHidden({ timeout: 30000 });
-  await expect(page.locator('.page-thumb')).toHaveCount(3);
-  await page.getByRole('button', { name: 'Сказуемое', exact: true }).click();
+  await expect(page.locator('.presentation-controls')).toHaveCount(1);
+  await expect(page.locator('.slide-counter')).toHaveText('1 / 2');
+  await expect(page.locator('.pages-sidebar')).toHaveCount(0);
   await expect(page.locator('.save-state')).toContainText('Сохранено');
   const updated = await (await request.get(`/api/v1/boards/${board.id}`)).json();
-  const imported = updated.pages.find((p: any) => p.title.includes('Лист разбора'));
-  const importedScene = await (await request.get(`/api/v1/pages/${imported.id}/snapshot`)).json();
-  expect(importedScene.scene.some((e: any) => e.type === 'image' && e.locked)).toBeTruthy();
+  expect(updated.pages).toHaveLength(1);
+  let importedScene = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
+  const presentation = importedScene.scene.find((e: any) => e.customData?.presentation);
+  expect(presentation.customData.presentation.slides).toHaveLength(2);
+  expect(presentation.locked).toBe(false);
+  const box = await page.locator('.presentation-controls').boundingBox();
+  expect(box).toBeTruthy();
+  await page.getByRole('button', { name: 'Ручка', exact: true }).click();
+  await page.mouse.move(box!.x + box!.width * 0.4, box!.y - 100);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + box!.width * 0.4 + 30, box!.y - 95, { steps: 4 });
+  // Pausing past the autosave debounce must not end an unfinished native stroke.
+  await page.waitForTimeout(650);
+  await page.mouse.move(box!.x + box!.width * 0.4 + 100, box!.y - 90, { steps: 8 });
+  await page.mouse.up();
+  await expect(page.locator('.save-state')).toContainText('Сохранено');
+  await expect
+    .poll(async () => {
+      const scene = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
+      return scene.scene.filter(
+        (e: any) =>
+          e.customData?.slideAnnotation?.presentationId === presentation.id && !e.isDeleted,
+      ).length;
+    })
+    .toBeGreaterThan(0);
+  const beforeMove = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
+  const inkBefore = beforeMove.scene.find(
+    (e: any) =>
+      e.type === 'freedraw' &&
+      e.customData?.slideAnnotation?.presentationId === presentation.id &&
+      !e.isDeleted,
+  );
+  expect(inkBefore.width).toBeGreaterThan(80);
+  const deckBefore = beforeMove.scene.find((e: any) => e.id === presentation.id);
+  // Use the native selection tool to move the PDF, then check that its ink follows once.
+  await page.keyboard.press('v');
+  const dragBox = await page.locator('.presentation-controls').boundingBox();
+  await page.mouse.move(dragBox!.x + dragBox!.width / 2, dragBox!.y - 180);
+  await page.mouse.down();
+  await page.mouse.move(dragBox!.x + dragBox!.width / 2 + 80, dragBox!.y - 150, { steps: 10 });
+  await page.mouse.up();
+  await expect
+    .poll(async () => {
+      const scene = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
+      return Math.abs(scene.scene.find((e: any) => e.id === presentation.id).x - deckBefore.x);
+    })
+    .toBeGreaterThan(10);
+  await expect(page.locator('.save-state')).toContainText('Сохранено');
+  const afterMove = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
+  const deckAfter = afterMove.scene.find((e: any) => e.id === presentation.id);
+  const inkAfter = afterMove.scene.find((e: any) => e.id === inkBefore.id);
+  expect(inkAfter.x - inkBefore.x).toBeCloseTo(deckAfter.x - deckBefore.x, 1);
+  expect(inkAfter.y - inkBefore.y).toBeCloseTo(deckAfter.y - deckBefore.y, 1);
+  await page.getByRole('button', { name: 'Следующий слайд: Физика', exact: true }).click();
+  await expect(page.locator('.slide-counter')).toHaveText('2 / 2');
+  await expect(page.locator('.save-state')).toContainText('Сохранено');
+  await guestPage.reload();
+  await expect(guestPage.locator('.slide-counter')).toHaveText('2 / 2');
+  await page.getByRole('button', { name: 'Предыдущий слайд: Физика', exact: true }).click();
+  await expect(page.locator('.slide-counter')).toHaveText('1 / 2');
+  await expect(page.locator('.save-state')).toContainText('Сохранено');
+  await page.reload();
+  await expect(page.locator('.slide-counter')).toHaveText('1 / 2');
+  await expect(page.locator('.canvas-paper')).toHaveAttribute('data-background', 'grid');
+  importedScene = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
+  expect(
+    importedScene.scene.some(
+      (e: any) => e.customData?.slideAnnotation?.slideIndex === 0 && !e.isDeleted,
+    ),
+  ).toBeTruthy();
+  await page.screenshot({ path: testInfo.outputPath('unified-canvas.png') });
   await page.getByRole('button', { name: 'Экспорт', exact: true }).click();
   const pdfDownload = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Документ PDF', exact: true }).click();
   const exported = await pdfDownload;
   const exportedBytes = await readFile((await exported.path())!);
   expect(exportedBytes.subarray(0, 5).toString()).toBe('%PDF-');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await expect(page.locator('.slide-counter')).toHaveText('1 / 2');
+  await page.getByRole('button', { name: 'Следующий слайд: Физика', exact: true }).click();
+  await expect(page.locator('.slide-counter')).toHaveText('2 / 2');
+  await page.getByRole('button', { name: 'Фон', exact: true }).click();
+  const picker = await page.locator('.background-picker').boundingBox();
+  expect(picker!.x).toBeGreaterThanOrEqual(0);
+  expect(picker!.x + picker!.width).toBeLessThanOrEqual(390);
+  await page.getByRole('button', { name: 'Клетка', exact: true }).click();
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2),
+  ).toBeTruthy();
+  await page.screenshot({ path: testInfo.outputPath('mobile-board.png') });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   // A student account uses a separate browser session.
   const studentContext = await browser.newContext({
       viewport: { width: 390, height: 844 },

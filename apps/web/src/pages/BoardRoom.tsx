@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   Excalidraw,
   MainMenu,
   WelcomeScreen,
   CaptureUpdateAction,
   convertToExcalidrawElements,
-  exportToBlob,
+  exportToCanvas,
+  getCommonBounds,
   restoreElements,
 } from '@excalidraw/excalidraw';
 import type { ExcalidrawImperativeAPI, BinaryFiles } from '@excalidraw/excalidraw/types';
@@ -17,28 +18,26 @@ import { PDFDocument } from 'pdf-lib';
 import {
   ArrowLeft,
   ArrowRight,
-  Plus,
   Upload,
   Download,
   History,
   Users,
   X,
-  ChevronDown,
-  ChevronUp,
-  Trash2,
   Pencil,
   Layers,
   FileText,
   Check,
   WifiOff,
   LoaderCircle,
-  Grip,
   Highlighter,
   PenLine,
-  BookOpen,
-  MousePointer2,
   CircleHelp,
-  Link as LinkIcon,
+  Type,
+  StickyNote,
+  Grid2X2,
+  ChevronLeft,
+  ChevronRight,
+  Maximize2,
 } from 'lucide-react';
 import '@excalidraw/excalidraw/index.css';
 import '../board/board.css';
@@ -58,15 +57,32 @@ import {
 } from '../ui';
 import { InviteDialog } from './editors';
 import { readDraft, writeDraft, type OfflineDraft } from '../board/offline';
-import type { Asset, Board, ElementData, Page } from '../../../../packages/contracts';
+import type {
+  Asset,
+  Board,
+  BoardBackground,
+  PresentationSlide,
+  Page,
+} from '../../../../packages/contracts';
+
+import { backgrounds, backgroundStyle, paintBackground } from '../board/background';
+import { captureCanvas } from '../board/canvas';
+import {
+  presentationOf,
+  projectCanvas,
+  slideIsHidden,
+  changedElement,
+} from '../../../../packages/contracts/canvas';
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 (window as any).EXCALIDRAW_ASSET_PATH = '/excalidraw-assets/';
+
 type SaveState = 'saved' | 'saving' | 'offline' | 'error';
 type EditorHandle = {
   flush: () => Promise<void>;
   export: (type: 'png' | 'pdf' | 'scene') => Promise<void>;
-  addSyntax: (kind: string) => void;
+  addMedia: (elements: any[], files: any[]) => void;
+  placement: () => { x: number; y: number };
   addTemplate: (kind: string) => void;
   setPen: (highlight: boolean) => void;
   revision: () => number;
@@ -91,7 +107,7 @@ function blobDataUrl(blob: Blob): Promise<string> {
 function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) =>
     canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error('Не удалось подготовить страницу'))),
+      (b) => (b ? resolve(b) : reject(new Error('Не удалось подготовить изображение'))),
       'image/png',
     ),
   );
@@ -99,40 +115,32 @@ function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 
 export default function BoardRoom() {
   const { id } = useParams(),
-    navigate = useNavigate(),
     [search, setSearch] = useSearchParams(),
     { user, toast, refresh } = useApp();
   const [board, setBoard] = useState<Board | null>(null),
-    [pageId, setPageId] = useState(''),
     [loadError, setLoadError] = useState(''),
     [save, setSave] = useState<SaveState>('saved'),
     [saveError, setSaveError] = useState(''),
-    [pagesOpen, setPagesOpen] = useState(window.innerWidth > 900),
-    [syntaxOpen, setSyntaxOpen] = useState(false),
+    [backgroundBusy, setBackgroundBusy] = useState(false),
+    [backgroundOpen, setBackgroundOpen] = useState(false),
     [inviteOpen, setInviteOpen] = useState(false),
     [exportOpen, setExportOpen] = useState(false),
     [historyOpen, setHistoryOpen] = useState(false),
-    [rename, setRename] = useState<{ type: 'board' | 'page'; id: string; title: string } | null>(
-      null,
-    ),
-    [deletePage, setDeletePage] = useState<Page | null>(null),
+    [rename, setRename] = useState(false),
     [importStatus, setImportStatus] = useState(''),
-    [filesOpen, setFilesOpen] = useState(false),
-    [assets, setAssets] = useState<Asset[]>([]),
-    [help, setHelp] = useState(false);
+    [assets, setAssets] = useState<Asset[] | null>(null),
+    [help, setHelp] = useState(false),
+    [editorReady, setEditorReady] = useState(false),
+    [peers, setPeers] = useState<{ id: string; name: string }[]>([]),
+    [conflict, setConflict] = useState<{ elements: any[]; files: any } | null>(null);
   const handle = useRef<EditorHandle | null>(null),
     fileInput = useRef<HTMLInputElement>(null),
-    [peers, setPeers] = useState<{ id: string; name: string }[]>([]),
-    [conflict, setConflict] = useState<{ elements: any[]; files: any } | null>(null),
     importing = useRef(false);
   const load = useCallback(async () => {
     try {
-      const b = await api<Board>(`/boards/${id}`);
+      let b = await api<Board>(`/boards/${id}`);
+      if (!b.canvas_page_id) b = { ...b, ...(await api<Board>(`/boards/${id}/canvas`, {})) };
       setBoard(b);
-      setPageId((p) => {
-        const desired = p || localStorage.getItem(`osnova-page:${user.id}:${id}`);
-        return b.pages?.some((x) => x.id === desired) ? desired! : b.pages?.[0]?.id || '';
-      });
     } catch (e) {
       setLoadError((e as Error).message);
     }
@@ -140,18 +148,20 @@ export default function BoardRoom() {
   useEffect(() => {
     void load();
   }, [load]);
-  useEffect(() => {
-    if (pageId) localStorage.setItem(`osnova-page:${user.id}:${id}`, pageId);
-  }, [pageId]);
   const readOnly = board?.permission === 'view' || !!board?.archived;
   const importFile = useCallback(
     async (file: File) => {
       if (!board || readOnly || importing.current) return;
+      if (!handle.current) {
+        toast('Холст ещё загружается. Повторите загрузку через несколько секунд');
+        return;
+      }
       importing.current = true;
       setImportStatus('Сохраняем исходный файл…');
       try {
-        await handle.current?.flush();
+        await handle.current.flush();
         const original = await upload(file, { boardId: board.id });
+        const position = handle.current.placement();
         if (file.type === 'application/pdf') {
           const loadingTask = getDocument({
             data: new Uint8Array(await file.arrayBuffer()),
@@ -162,16 +172,41 @@ export default function BoardRoom() {
           });
           const pdf = await loadingTask.promise;
           try {
-            if (pdf.numPages > 30) throw new Error('В одном PDF должно быть не больше 30 страниц');
-            let first = '';
+            if (pdf.numPages > 30)
+              throw new Error('В одной презентации должно быть не больше 30 слайдов');
+            const slides: PresentationSlide[] = [],
+              firstFiles: any[] = [];
+            let frameWidth = 0,
+              frameHeight = 0;
             for (let n = 1; n <= pdf.numPages; n++) {
-              setImportStatus(`Готовим страницу ${n} из ${pdf.numPages}…`);
-              const pdfPage = await pdf.getPage(n),
-                viewport = pdfPage.getViewport({ scale: 1.75 }),
+              setImportStatus(`Готовим слайд ${n} из ${pdf.numPages}…`);
+              const page = await pdf.getPage(n),
+                originalViewport = page.getViewport({ scale: 1.75 }),
                 canvas = document.createElement('canvas');
-              canvas.width = Math.ceil(viewport.width);
-              canvas.height = Math.ceil(viewport.height);
-              await pdfPage.render({ canvas, viewport }).promise;
+              if (n === 1) {
+                frameWidth = Math.ceil(originalViewport.width);
+                frameHeight = Math.ceil(originalViewport.height);
+              }
+              const fit = Math.min(
+                  frameWidth / originalViewport.width,
+                  frameHeight / originalViewport.height,
+                ),
+                viewport = page.getViewport({ scale: 1.75 * fit });
+              canvas.width = frameWidth;
+              canvas.height = frameHeight;
+              await page.render({
+                canvas,
+                viewport,
+                background: '#fff',
+                transform: [
+                  1,
+                  0,
+                  0,
+                  1,
+                  (frameWidth - viewport.width) / 2,
+                  (frameHeight - viewport.height) / 2,
+                ],
+              }).promise;
               const blob = await canvasBlob(canvas),
                 fileId = crypto.randomUUID();
               await upload(blob, {
@@ -179,67 +214,67 @@ export default function BoardRoom() {
                 excalidrawId: fileId,
                 name: `pdf-page-${n}-${file.name}.png`,
               });
-              const p = await api<Page>(`/boards/${board.id}/pages`, {
-                title: `${file.name.replace(/\.pdf$/i, '')} · ${n}`,
-              });
-              if (!first) first = p.id;
-              const elements = convertToExcalidrawElements([
-                {
-                  type: 'image',
-                  x: 0,
-                  y: 0,
-                  width: viewport.width / 1.75,
-                  height: viewport.height / 1.75,
-                  fileId: fileId as any,
-                  locked: true,
-                  status: 'saved',
-                  customData: { pdfSourceId: original.id, pdfPage: n },
-                },
-              ]);
-              await api(`/pages/${p.id}/operations`, {
-                operationId: crypto.randomUUID(),
-                changes: elements.map((element) => ({ element, baseVersion: null })),
-              });
+              slides.push({ fileId, width: frameWidth / 1.75, height: frameHeight / 1.75 });
+              if (n === 1)
+                firstFiles.push({
+                  id: fileId,
+                  mimeType: 'image/png',
+                  dataURL: await blobDataUrl(blob),
+                  created: Date.now(),
+                });
               canvas.width = 0;
               canvas.height = 0;
-              pdfPage.cleanup();
+              page.cleanup();
             }
-            await load();
-            setPageId(first);
-            toast(`PDF добавлен: ${pdf.numPages} стр.`);
+            const scale = Math.min(960 / slides[0].width, 640 / slides[0].height, 1.5);
+            const elements = convertToExcalidrawElements([
+              {
+                type: 'image',
+                ...position,
+                width: slides[0].width * scale,
+                height: slides[0].height * scale,
+                fileId: slides[0].fileId as any,
+                locked: false,
+                status: 'saved',
+                customData: {
+                  presentation: {
+                    sourceId: original.id,
+                    title: file.name.replace(/\.pdf$/i, ''),
+                    slides,
+                    slideIndex: 0,
+                  },
+                },
+              },
+            ]);
+            handle.current.addMedia(elements, firstFiles);
+            toast(`Презентация добавлена: ${slides.length} слайдов`);
           } finally {
             await loadingTask.destroy();
           }
         } else {
           const fileId = crypto.randomUUID();
           await upload(file, { boardId: board.id, excalidrawId: fileId, name: file.name });
-          const image = new Image();
-          const dataURL = await blobDataUrl(file);
+          const dataURL = await blobDataUrl(file),
+            image = new Image();
           image.src = dataURL;
           await image.decode();
-          const p = await api<Page>(`/boards/${board.id}/pages`, { title: file.name });
-          const width = Math.min(image.width, 1200),
-            height = image.height * (width / image.width);
+          const scale = Math.min(960 / image.width, 640 / image.height, 1);
           const elements = convertToExcalidrawElements([
             {
               type: 'image',
-              x: 0,
-              y: 0,
-              width,
-              height,
+              ...position,
+              width: image.width * scale,
+              height: image.height * scale,
               fileId: fileId as any,
-              status: 'saved',
               locked: false,
+              status: 'saved',
               customData: { sourceId: original.id },
             },
           ]);
-          await api(`/pages/${p.id}/operations`, {
-            operationId: crypto.randomUUID(),
-            changes: elements.map((element) => ({ element, baseVersion: null })),
-          });
-          await load();
-          setPageId(p.id);
-          toast('Изображение добавлено');
+          handle.current.addMedia(elements, [
+            { id: fileId, mimeType: file.type, dataURL, created: Date.now() },
+          ]);
+          toast('Изображение добавлено на холст');
         }
         await refresh();
       } catch (e) {
@@ -249,11 +284,11 @@ export default function BoardRoom() {
         setImportStatus('');
       }
     },
-    [board, readOnly, load],
+    [board, readOnly],
   );
   useEffect(() => {
     const assetId = search.get('import');
-    if (!board || !assetId || importing.current) return;
+    if (!board || !editorReady || !assetId || importing.current) return;
     setSearch({}, { replace: true });
     fetch(fileUrl(assetId))
       .then(async (r) => {
@@ -267,15 +302,19 @@ export default function BoardRoom() {
       })
       .then(importFile)
       .catch((e) => toast(e.message));
-  }, [board?.id, search]);
-  const selectPage = async (id: string) => {
-    if (id === pageId) return;
-    if (save !== 'saved') {
-      toast('Дождитесь сохранения или восстановления связи перед сменой страницы');
-      return;
+  }, [board?.id, editorReady, search]);
+  const changeBackground = async (background: BoardBackground) => {
+    if (!board || readOnly) return;
+    setBackgroundBusy(true);
+    try {
+      const updated = await api<Board>(`/boards/${board.id}`, { background }, 'PATCH');
+      setBoard((b) => (b ? { ...b, background: updated.background } : b));
+      setBackgroundOpen(false);
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setBackgroundBusy(false);
     }
-    setPageId(id);
-    if (window.innerWidth < 900) setPagesOpen(false);
   };
   if (loadError)
     return (
@@ -286,7 +325,7 @@ export default function BoardRoom() {
         </Link>
       </div>
     );
-  if (!board) return <Busy />;
+  if (!board || !board.canvas_page_id) return <Busy />;
   return (
     <div className="board-room">
       <header className="board-topbar">
@@ -297,28 +336,27 @@ export default function BoardRoom() {
           о<span>.</span>
         </span>
         <div className="board-title">
-          <button
-            disabled={user.role !== 'teacher'}
-            onClick={() => setRename({ type: 'board', id: board.id, title: board.title })}
-          >
+          <button disabled={user.role !== 'teacher'} onClick={() => setRename(true)}>
             {board.title}
             <Pencil size={13} />
           </button>
-          <span className={`save-state ${save}`} role="status">
-            {save === 'saved' ? (
+          <span className={`save-state ${backgroundBusy ? 'saving' : save}`} role="status">
+            {save === 'saved' && !backgroundBusy ? (
               <Check size={12} />
-            ) : save === 'saving' ? (
+            ) : save === 'saving' || backgroundBusy ? (
               <LoaderCircle size={12} className="spin" />
             ) : (
               <WifiOff size={12} />
             )}{' '}
-            {save === 'saved'
-              ? 'Сохранено'
-              : save === 'saving'
-                ? 'Сохраняем…'
-                : save === 'offline'
-                  ? 'Нет связи · правки на устройстве'
-                  : 'Не удалось сохранить'}
+            {backgroundBusy
+              ? 'Сохраняем фон…'
+              : save === 'saved'
+                ? 'Сохранено'
+                : save === 'saving'
+                  ? 'Сохраняем…'
+                  : save === 'offline'
+                    ? 'Нет связи · правки на устройстве'
+                    : 'Не удалось сохранить'}
             {readOnly ? ' · Только просмотр' : ''}
           </span>
         </div>
@@ -329,12 +367,7 @@ export default function BoardRoom() {
               <Avatar key={p.id} small name={p.name} color="mint" />
             ))}
           </div>
-          <button
-            className="icon-btn"
-            title="Как работать на доске"
-            aria-label="Помощь по доске"
-            onClick={() => setHelp(true)}
-          >
+          <button className="icon-btn" aria-label="Помощь по доске" onClick={() => setHelp(true)}>
             <CircleHelp size={20} />
           </button>
           <Button variant="secondary" onClick={() => setExportOpen(true)}>
@@ -342,7 +375,7 @@ export default function BoardRoom() {
             <span>Экспорт</span>
           </Button>
           {user.role === 'teacher' && (
-            <Button onClick={() => setInviteOpen(true)} disabled={board.archived}>
+            <Button disabled={board.archived} onClick={() => setInviteOpen(true)}>
               <Users size={16} />
               <span>Пригласить</span>
             </Button>
@@ -351,42 +384,29 @@ export default function BoardRoom() {
       </header>
       <div className="board-actionbar">
         <div className="button-row">
-          <button
-            className={`board-action ${pagesOpen ? 'selected' : ''}`}
-            onClick={() => setPagesOpen(!pagesOpen)}
-          >
-            <Layers size={16} />
-            Страницы <span>{board.pages?.length}</span>
-          </button>
           {!readOnly && (
             <>
               <button
                 className="board-action"
                 onClick={() => fileInput.current?.click()}
-                disabled={!!importStatus}
+                disabled={!!importStatus || !editorReady}
               >
                 <Upload size={16} />
-                Загрузить
+                Загрузить PDF или изображение
               </button>
-              <button
-                className={`board-action ${syntaxOpen ? 'selected' : ''}`}
-                onClick={() => setSyntaxOpen(!syntaxOpen)}
-              >
-                <BookOpen size={16} />
-                Русский язык
-                <ChevronDown size={13} />
+              <button className="board-action" onClick={() => handle.current?.addTemplate('text')}>
+                <Type size={16} />
+                Текст
               </button>
-              <button
-                className="board-action pen-action"
-                onClick={() => handle.current?.setPen(false)}
-              >
+              <button className="board-action" onClick={() => handle.current?.addTemplate('note')}>
+                <StickyNote size={16} />
+                Заметка
+              </button>
+              <button className="board-action" onClick={() => handle.current?.setPen(false)}>
                 <PenLine size={16} />
                 Ручка
               </button>
-              <button
-                className="board-action pen-action"
-                onClick={() => handle.current?.setPen(true)}
-              >
+              <button className="board-action" onClick={() => handle.current?.setPen(true)}>
                 <Highlighter size={16} />
                 Маркер
               </button>
@@ -395,17 +415,24 @@ export default function BoardRoom() {
         </div>
         <div className="button-row">
           <button
+            className={`board-action ${backgroundOpen ? 'selected' : ''}`}
+            onClick={() => setBackgroundOpen(!backgroundOpen)}
+            aria-expanded={backgroundOpen}
+          >
+            <Grid2X2 size={16} />
+            Фон
+          </button>
+          <button
             className="board-action"
             onClick={async () => {
               try {
                 setAssets(await api(`/boards/${board.id}/files`));
-                setFilesOpen(true);
               } catch (e) {
                 toast((e as Error).message);
               }
             }}
           >
-            <FolderIcon />
+            <Layers size={16} />
             Файлы
           </button>
           {user.role === 'teacher' && (
@@ -417,6 +444,36 @@ export default function BoardRoom() {
           <span className="board-participant-count">{peers.length + 1} на доске</span>
         </div>
       </div>
+      {backgroundOpen && (
+        <div className="background-picker" role="dialog" aria-label="Фон доски">
+          <div className="background-picker-head">
+            <strong>Фон доски</strong>
+            <button
+              className="icon-btn"
+              aria-label="Закрыть выбор фона"
+              onClick={() => setBackgroundOpen(false)}
+            >
+              <X size={16} />
+            </button>
+          </div>
+          <div className="background-options">
+            {backgrounds.map((b) => (
+              <button
+                key={b.id}
+                className={`background-option ${board.background === b.id ? 'active' : ''}`}
+                disabled={readOnly || backgroundBusy}
+                onClick={() => changeBackground(b.id)}
+                aria-pressed={board.background === b.id}
+              >
+                <i style={backgroundStyle(b.id)} />
+                <span>{b.title}</span>
+                {board.background === b.id && <Check size={14} />}
+              </button>
+            ))}
+          </div>
+          {readOnly && <p className="muted">Фон выбирает участник с правом редактирования.</p>}
+        </div>
+      )}
       {saveError && (
         <div className="board-warning" role="alert">
           {saveError}
@@ -425,8 +482,7 @@ export default function BoardRoom() {
       )}
       {conflict && (
         <div className="board-warning" role="alert">
-          Другой участник изменил тот же объект. Серверная версия сохранена; ваш вариант можно
-          скачать.
+          Другой участник изменил тот же объект. Ваш вариант можно скачать.
           <Button
             variant="secondary"
             onClick={() =>
@@ -463,162 +519,28 @@ export default function BoardRoom() {
         </div>
       )}
       <div className="board-body">
-        {pagesOpen && (
-          <>
-            <div className="pages-scrim" onClick={() => setPagesOpen(false)} />
-            <aside className="pages-sidebar">
-              <div className="pages-heading">
-                <strong>Страницы</strong>
-                <button
-                  className="icon-btn"
-                  aria-label="Скрыть страницы"
-                  onClick={() => setPagesOpen(false)}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-              <div className="page-thumbnails">
-                {board.pages?.map((p, i) => (
-                  <div key={p.id} className={`page-thumb ${pageId === p.id ? 'active' : ''}`}>
-                    <button className="page-thumb-open" onClick={() => selectPage(p.id)}>
-                      <div className="page-miniature">
-                        <FileText size={28} />
-                        <span>{i + 1}</span>
-                      </div>
-                      <strong>{p.title}</strong>
-                    </button>
-                    {user.role === 'teacher' && !readOnly && (
-                      <div className="page-thumb-tools">
-                        <button
-                          aria-label={`Переименовать ${p.title}`}
-                          onClick={() => setRename({ type: 'page', id: p.id, title: p.title })}
-                        >
-                          <Pencil size={12} />
-                        </button>
-                        <button
-                          disabled={i === 0}
-                          aria-label="Поднять страницу"
-                          onClick={async () => {
-                            try {
-                              await api(
-                                `/pages/${p.id}`,
-                                { position: board.pages![i - 1].position },
-                                'PATCH',
-                              );
-                              await api(
-                                `/pages/${board.pages![i - 1].id}`,
-                                { position: p.position },
-                                'PATCH',
-                              );
-                              await load();
-                            } catch (e) {
-                              toast((e as Error).message);
-                            }
-                          }}
-                        >
-                          <ChevronUp size={13} />
-                        </button>
-                        <button
-                          disabled={(board.pages?.length || 0) < 2}
-                          aria-label={`Удалить ${p.title}`}
-                          onClick={() => setDeletePage(p)}
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-              {user.role === 'teacher' && !readOnly && (
-                <Button
-                  variant="secondary"
-                  onClick={async () => {
-                    try {
-                      await handle.current?.flush();
-                      if (save === 'offline' || save === 'error') return;
-                      const p = await api<Page>(`/boards/${board.id}/pages`, {
-                        title: `Страница ${(board.pages?.length || 0) + 1}`,
-                      });
-                      await load();
-                      setPageId(p.id);
-                    } catch (e) {
-                      toast((e as Error).message);
-                    }
-                  }}
-                >
-                  <Plus size={16} />
-                  Страница
-                </Button>
-              )}
-            </aside>
-          </>
-        )}
         <div className="canvas-shell">
-          {pageId && (
-            <PageEditor
-              key={pageId}
-              board={board}
-              pageId={pageId}
-              readOnly={readOnly}
-              handleRef={handle}
-              onSave={(state, error) => {
-                setSave(state);
-                setSaveError(error || '');
-              }}
-              onPeers={setPeers}
-              onConflict={setConflict}
-              onPages={load}
-            />
-          )}{' '}
-          {syntaxOpen && !readOnly && (
-            <div className="syntax-panel">
-              <div className="syntax-head">
-                <strong>Разбор предложения</strong>
-                <button
-                  className="icon-btn"
-                  aria-label="Закрыть инструменты русского языка"
-                  onClick={() => setSyntaxOpen(false)}
-                >
-                  <X size={15} />
-                </button>
-              </div>
-              <div className="syntax-lines">
-                {[
-                  ['single', 'Подлежащее'],
-                  ['double', 'Сказуемое'],
-                  ['wave', 'Определение'],
-                  ['dash', 'Дополнение'],
-                  ['dashdot', 'Обстоятельство'],
-                ].map(([kind, name]) => (
-                  <button key={kind} onClick={() => handle.current?.addSyntax(kind)}>
-                    <LineSample kind={kind} />
-                    <span>{name}</span>
-                  </button>
-                ))}
-              </div>
-              <div className="syntax-templates">
-                <strong>Быстрый старт</strong>
-                <Button variant="secondary" onClick={() => handle.current?.addTemplate('text')}>
-                  Большой текст
-                </Button>
-                <Button variant="secondary" onClick={() => handle.current?.addTemplate('oge')}>
-                  Задание ОГЭ / ЕГЭ
-                </Button>
-                <Button variant="secondary" onClick={() => handle.current?.addTemplate('comment')}>
-                  Комментарий к ответу
-                </Button>
-              </div>
-              <p>
-                Добавьте линию и расположите её под нужным словом. Для орфограмм используйте маркер.
-              </p>
-            </div>
-          )}
+          <PageEditor
+            key={board.canvas_page_id}
+            board={board}
+            pageId={board.canvas_page_id}
+            readOnly={readOnly}
+            handleRef={handle}
+            onSave={(state, error) => {
+              setSave(state);
+              setSaveError(error || '');
+            }}
+            onPeers={setPeers}
+            onConflict={setConflict}
+            onPages={load}
+            onReady={() => setEditorReady(true)}
+            onBackground={(background) => setBoard((b) => (b ? { ...b, background } : b))}
+          />
         </div>
       </div>
       <input
-        type="file"
         ref={fileInput}
+        type="file"
         hidden
         accept="application/pdf,image/png,image/jpeg,image/webp"
         onChange={(e) => {
@@ -632,30 +554,33 @@ export default function BoardRoom() {
           <LoaderCircle className="spin" size={20} />
           <div>
             <strong>{importStatus}</strong>
-            <small>Можно продолжить после завершения импорта</small>
+            <small>Все слайды останутся внутри одной презентации на холсте</small>
           </div>
         </div>
       )}
       {rename && (
         <Rename
-          title={rename.title}
-          onClose={() => setRename(null)}
+          title={board.title}
+          onClose={() => setRename(false)}
           onSave={async (title) => {
-            await api(
-              rename.type === 'board' ? `/boards/${rename.id}` : `/pages/${rename.id}`,
-              { title },
-              'PATCH',
-            );
+            await api(`/boards/${board.id}`, { title }, 'PATCH');
             await load();
           }}
         />
       )}
       {inviteOpen && <BoardInvites boardId={board.id} onClose={() => setInviteOpen(false)} />}
+      {historyOpen && (
+        <BoardHistory
+          pageId={board.canvas_page_id}
+          revision={() => handle.current?.revision() || 0}
+          onClose={() => setHistoryOpen(false)}
+        />
+      )}
       {exportOpen && (
-        <Modal title="Экспорт страницы" onClose={() => setExportOpen(false)}>
+        <Modal title="Экспорт холста" onClose={() => setExportOpen(false)}>
           <p className="muted">
-            Экспортируется открытая страница вместе с пометками. Формат сцены можно снова загрузить
-            через меню редактора.
+            PNG и PDF включают видимые слайды, пометки и выбранный фон. Редактируемая сцена хранит
+            все слайды и заметки презентаций.
           </p>
           <div className="export-options">
             {[
@@ -682,26 +607,8 @@ export default function BoardRoom() {
           </div>
         </Modal>
       )}
-      {historyOpen && (
-        <BoardHistory
-          pageId={pageId}
-          revision={() => handle.current?.revision() || 0}
-          onClose={() => setHistoryOpen(false)}
-        />
-      )}
-      {deletePage && (
-        <Confirm
-          title="Удалить страницу?"
-          text={`Страница «${deletePage.title}» и её история будут удалены. Сначала экспортируйте нужные материалы.`}
-          onClose={() => setDeletePage(null)}
-          onConfirm={async () => {
-            await api(`/pages/${deletePage.id}`, undefined, 'DELETE');
-            await load();
-          }}
-        />
-      )}
-      {filesOpen && (
-        <Modal title="Исходные материалы доски" onClose={() => setFilesOpen(false)}>
+      {assets && (
+        <Modal title="Исходные материалы доски" onClose={() => setAssets(null)}>
           {assets
             .filter((f) => !f.name.startsWith('pdf-page-'))
             .map((f) => (
@@ -718,11 +625,19 @@ export default function BoardRoom() {
         </Modal>
       )}
       {help && (
-        <Modal title="Доска для хорошего урока" onClose={() => setHelp(false)}>
+        <Modal title="Общий холст для любого предмета" onClose={() => setHelp(false)}>
           <p>
-            Основные инструменты находятся над рабочим полем: выделение, ручка, текст, линии, фигуры
-            и ластик. Цвет, толщину и прозрачность можно изменить в свойствах выбранного
-            инструмента.
+            На бесконечном холсте можно размещать тексты, изображения, схемы и несколько
+            PDF-презентаций. Перемещайте объекты и меняйте их размер инструментом выделения.
+          </p>
+          <p>
+            Переключайте слайды кнопками под презентацией. Пометки внутри слайда сохраняются
+            отдельно для него и возвращаются при переходе назад. Изменение слайда видно всем
+            участникам с доступом к доске.
+          </p>
+          <p>
+            Выберите «Фон»: белый холст, клетка, линии или точки. Рисунок фона масштабируется вместе
+            с холстом и включается в экспорт.
           </p>
           <div className="help-shortcuts">
             <span>
@@ -744,10 +659,6 @@ export default function BoardRoom() {
               <kbd>Ctrl Z</kbd> Отмена
             </span>
           </div>
-          <p>
-            Для маркера выберите ручку, увеличьте толщину и уменьшите непрозрачность. В разделе
-            «Русский язык» — линии для синтаксического разбора. PDF добавляются кнопкой «Загрузить».
-          </p>
           <p className="muted">
             «Сохранено» появляется после ответа сервера. При потере связи дождитесь отправки
             локальных правок перед закрытием браузера.
@@ -757,26 +668,7 @@ export default function BoardRoom() {
     </div>
   );
 }
-function FolderIcon() {
-  return <Layers size={16} />;
-}
-function LineSample({ kind }: { kind: string }) {
-  return (
-    <svg viewBox="0 0 80 18" aria-hidden="true">
-      {kind === 'wave' ? (
-        <path d="M0 9q5-8 10 0t10 0t10 0t10 0t10 0t10 0t10 0t10 0" />
-      ) : (
-        <>
-          <path
-            d="M0 7h80"
-            strokeDasharray={kind === 'dash' ? '8 5' : kind === 'dashdot' ? '12 4 2 4' : undefined}
-          />
-          {kind === 'double' && <path d="M0 13h80" />}
-        </>
-      )}
-    </svg>
-  );
-}
+
 function Rename({
   title,
   onClose,
@@ -831,6 +723,8 @@ function PageEditor({
   onPeers,
   onConflict,
   onPages,
+  onReady,
+  onBackground,
 }: {
   board: Board;
   pageId: string;
@@ -840,11 +734,20 @@ function PageEditor({
   onPeers: (p: any[]) => void;
   onConflict: (data: { elements: any[]; files: any }) => void;
   onPages: () => Promise<void>;
+  onReady: () => void;
+  onBackground: (background: BoardBackground) => void;
 }) {
   const { user, toast } = useApp();
   const [initial, setInitial] = useState<any>(null),
     [error, setError] = useState(''),
-    [editor, setEditor] = useState<ExcalidrawImperativeAPI | null>(null);
+    [editor, setEditor] = useState<ExcalidrawImperativeAPI | null>(null),
+    [view, setView] = useState({ scrollX: 0, scrollY: 0, zoom: 1, width: 0, height: 0 }),
+    [decks, setDecks] = useState<any[]>([]),
+    [switching, setSwitching] = useState('');
+  const deckStamp = useRef('');
+  const pointerDown = useRef(false),
+    newElements = useRef(new Set<string>()),
+    dragStart = useRef<any[] | null>(null);
   const base = useRef(new Map<string, any>()),
     current = useRef<any[]>([]),
     fileData = useRef<BinaryFiles>({}),
@@ -860,6 +763,32 @@ function PageEditor({
     collaborators = useRef(new Map<string, any>()),
     storageOkay = useRef(true);
   const key = `${user.id}:${pageId}`;
+  const publishDecks = () => {
+    const next = current.current.filter((e) => !e.isDeleted && presentationOf(e));
+    const stamp = next.map((e) => `${e.id}:${fingerprint(e)}`).join('|');
+    if (deckStamp.current !== stamp) {
+      deckStamp.current = stamp;
+      setDecks(next);
+    }
+  };
+  const renderScene = (
+    captureUpdate: (typeof CaptureUpdateAction)[keyof typeof CaptureUpdateAction] = CaptureUpdateAction.NEVER,
+  ) => {
+    const native = new Map(editor?.getSceneElementsIncludingDeleted().map((e) => [e.id, e]));
+    editor?.updateScene({
+      // Keep native references for unchanged objects so autosave/remote edits cannot interrupt a stroke.
+      elements: restoreElements(projectCanvas(current.current), null).map((e) => {
+        const existing = native.get(e.id);
+        return existing &&
+          fingerprint(existing) === fingerprint(e) &&
+          existing.isDeleted === e.isDeleted
+          ? existing
+          : e;
+      }),
+      captureUpdate,
+    });
+    publishDecks();
+  };
   const diff = () =>
     current.current.filter((e) => fingerprint(e) !== fingerprint(base.current.get(e.id)));
   const persist = async () => {
@@ -946,15 +875,17 @@ function PageEditor({
           onConflict({ elements: recovery.elements, files: recovery.files });
         current.current = scene;
         await loadFiles(scene);
+        publishDecks();
         if (!mounted.current) return;
         setInitial({
-          elements: restoreElements(scene, null),
+          elements: restoreElements(projectCanvas(scene), null),
           appState: {
-            viewBackgroundColor: '#ffffff',
+            viewBackgroundColor: 'transparent',
             currentItemFontFamily: 2,
             currentItemStrokeColor: '#252846',
             currentItemRoughness: 0,
-            gridSize: null,
+            gridSize: 24,
+            gridModeEnabled: false,
           },
           files: fileData.current,
           scrollToContent: true,
@@ -986,10 +917,7 @@ function PageEditor({
       }
     }
     current.current = [...scene.values()];
-    editor?.updateScene({
-      elements: restoreElements(current.current, null),
-      captureUpdate: CaptureUpdateAction.NEVER,
-    });
+    renderScene();
   };
   const flush = async () => {
     if (readOnly || !ready.current || running.current) return;
@@ -1009,17 +937,19 @@ function PageEditor({
     onSave('saving');
     try {
       for (const e of dirty)
-        if (e.type === 'image' && !e.isDeleted && !knownFiles.current.has(e.fileId)) {
-          const f = fileData.current[e.fileId as keyof BinaryFiles];
-          if (!f) throw new Error('Изображение ещё загружается');
-          const blob = await (await fetch(f.dataURL)).blob();
-          await upload(blob, {
-            boardId: board.id,
-            excalidrawId: e.fileId,
-            name: 'Изображение доски.png',
-          });
-          knownFiles.current.add(e.fileId);
-        }
+        if (e.type === 'image' && !e.isDeleted)
+          for (const fileId of presentationOf(e)?.slides.map((s) => s.fileId) || [e.fileId]) {
+            if (knownFiles.current.has(fileId)) continue;
+            const f = fileData.current[fileId as keyof BinaryFiles];
+            if (!f) throw new Error('Изображение ещё загружается');
+            const blob = await (await fetch(f.dataURL)).blob();
+            await upload(blob, {
+              boardId: board.id,
+              excalidrawId: fileId,
+              name: 'Изображение доски.png',
+            });
+            knownFiles.current.add(fileId);
+          }
       const operation = pendingOperation.current || {
         id: crypto.randomUUID(),
         changes: dirty.slice(0, 1000).map((element) => ({
@@ -1052,10 +982,7 @@ function PageEditor({
       current.current = [...scene.values()];
       revision.current = Math.max(revision.current, result.revision);
       pendingOperation.current = null;
-      editor?.updateScene({
-        elements: restoreElements(current.current, null),
-        captureUpdate: CaptureUpdateAction.NEVER,
-      });
+      renderScene();
       await persist();
       onSave(diff().length ? 'saving' : 'saved');
     } catch (e) {
@@ -1074,8 +1001,49 @@ function PageEditor({
   };
   useEffect(() => {
     if (!editor || !initial) return;
-    ready.current = true;
-    void flush();
+    ready.current = false;
+    let initialFrame = 0;
+    const initialize = () => {
+      if (editor.getAppState().isLoading) {
+        initialFrame = requestAnimationFrame(initialize);
+        return;
+      }
+      editor.addFiles(Object.values(fileData.current));
+      renderScene();
+      ready.current = true;
+      onReady();
+      const visible = projectCanvas(current.current).filter((e) => !e.isDeleted);
+      if (visible.length)
+        editor.scrollToContent(restoreElements(visible, null), {
+          fitToContent: true,
+          viewportZoomFactor: 0.85,
+        });
+      void flush();
+    };
+    initialFrame = requestAnimationFrame(initialize);
+    const stopPointerDown = editor.onPointerDown(() => {
+      pointerDown.current = true;
+      dragStart.current = current.current.map((e) => ({
+        ...e,
+        ...(e.points ? { points: e.points.map((point: number[]) => [...point]) } : {}),
+      }));
+    });
+    let pointerFrame = 0;
+    const stopPointerUp = editor.onPointerUp(() => {
+      pointerDown.current = false;
+      pointerFrame = requestAnimationFrame(() => {
+        if (readOnly || !ready.current) return;
+        const rendered = editor.getSceneElementsIncludingDeleted();
+        current.current = captureCanvas(rendered, dragStart.current || current.current, {
+          attachIds: newElements.current,
+        }).map((e) => ({ ...e }));
+        dragStart.current = null;
+        newElements.current.clear();
+        renderScene();
+        void persist();
+        void flush();
+      });
+    });
     const socket = io({ withCredentials: true });
     socketRef.current = socket;
     socket.on('connect', () => {
@@ -1098,6 +1066,10 @@ function PageEditor({
     socket.on('pages-updated', () => {
       void onPages();
     });
+    socket.on('canvas-updated', () => {
+      void onPages();
+    });
+    socket.on('board-background', (payload) => onBackground(payload.background));
     socket.on('scene-update', (payload) => {
       void applyRemote(payload).catch((e) => onSave('error', e.message));
     });
@@ -1122,6 +1094,10 @@ function PageEditor({
     });
     socket.on('access-revoked', () => {
       ready.current = false;
+      cancelAnimationFrame(initialFrame);
+      stopPointerDown();
+      stopPointerUp();
+      cancelAnimationFrame(pointerFrame);
       onSave('error', 'Доступ к доске закрыт. Локальные изменения сохранены на устройстве.');
       editor.updateScene({ appState: { viewModeEnabled: true } });
     });
@@ -1143,6 +1119,34 @@ function PageEditor({
       window.removeEventListener('beforeunload', close);
     };
   }, [editor, !!initial]);
+  const changeSlide = async (id: string, index: number) => {
+    if (readOnly || switching) return;
+    const deck = current.current.find((e) => e.id === id),
+      presentation = deck && presentationOf(deck);
+    if (
+      !presentation ||
+      index < 0 ||
+      index >= presentation.slides.length ||
+      index === presentation.slideIndex
+    )
+      return;
+    setSwitching(id);
+    try {
+      const next = changedElement(deck, {
+        fileId: presentation.slides[index].fileId,
+        customData: { ...deck.customData, presentation: { ...presentation, slideIndex: index } },
+      });
+      await loadFiles([next], editor || undefined);
+      current.current = current.current.map((e) => (e.id === id ? next : e));
+      renderScene(CaptureUpdateAction.IMMEDIATELY);
+      void persist();
+      void flush();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setSwitching('');
+    }
+  };
   useEffect(() => {
     if (!editor) return;
     const add = (skeletons: any[]) => {
@@ -1163,6 +1167,30 @@ function PageEditor({
     handleRef.current = {
       flush,
       revision: () => revision.current,
+      placement() {
+        const visible = current.current.filter(
+          (e) => !e.isDeleted && !slideIsHidden(e, current.current),
+        );
+        return {
+          x: visible.length ? Math.max(...visible.map((e) => e.x + e.width)) + 120 : 80,
+          y: 80,
+        };
+      },
+      addMedia(elements, files) {
+        editor.addFiles(files);
+        for (const f of files) {
+          fileData.current[f.id as keyof BinaryFiles] = f;
+          knownFiles.current.add(f.id);
+        }
+        for (const element of elements)
+          for (const slide of presentationOf(element)?.slides || [])
+            knownFiles.current.add(slide.fileId);
+        editor.updateScene({
+          elements: [...editor.getSceneElementsIncludingDeleted(), ...elements],
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        });
+        editor.scrollToContent(elements, { fitToContent: true, viewportZoomFactor: 0.75 });
+      },
       setPen(highlight) {
         editor.updateScene({
           appState: {
@@ -1173,68 +1201,12 @@ function PageEditor({
         });
         editor.setActiveTool({ type: 'freedraw' });
       },
-      addSyntax(kind) {
-        const { x, y } = center();
-        const base = { type: 'line', x, y, strokeColor: '#4d48c8', strokeWidth: 2, roughness: 0 };
-        if (kind === 'double')
-          add([
-            {
-              ...base,
-              points: [
-                [0, 0],
-                [180, 0],
-              ],
-            },
-            {
-              ...base,
-              y: y + 6,
-              points: [
-                [0, 0],
-                [180, 0],
-              ],
-            },
-          ]);
-        else if (kind === 'wave')
-          add([
-            {
-              ...base,
-              points: Array.from({ length: 37 }, (_, i) => [
-                i * 5,
-                Math.sin((i * Math.PI) / 3) * 4,
-              ]),
-            },
-          ]);
-        else if (kind === 'dashdot') {
-          add(
-            Array.from({ length: 10 }, (_, i) => ({
-              ...base,
-              x: x + i * 18,
-              points: [
-                [0, 0],
-                [i % 2 ? 2 : 12, 0],
-              ],
-            })),
-          );
-        } else
-          add([
-            {
-              ...base,
-              points: [
-                [0, 0],
-                [180, 0],
-              ],
-              strokeStyle: kind === 'dash' ? 'dashed' : 'solid',
-            },
-          ]);
-      },
       addTemplate(kind) {
         const { x, y } = center();
         const text =
-          kind === 'oge'
-            ? 'Задание ОГЭ / ЕГЭ\n\nВставьте полный текст задания.\n\nОбъяснение выбора:\n\nОтвет:'
-            : kind === 'comment'
-              ? 'Комментарий преподавателя\n\nЧто получилось:\n\nЧто повторить:'
-              : 'Текст для разбора\n\nВставьте сюда предложение или абзац.\nДвойной щелчок — редактировать текст.';
+          kind === 'note'
+            ? 'Заметка\n\nИдея, вопрос или важный вывод.'
+            : 'Текстовый блок\n\nДважды нажмите, чтобы ввести текст.';
         add([
           {
             type: 'text',
@@ -1242,8 +1214,8 @@ function PageEditor({
             y,
             text,
             fontFamily: 2,
-            fontSize: kind === 'comment' ? 20 : 24,
-            strokeColor: kind === 'comment' ? '#2a8b69' : '#252846',
+            fontSize: kind === 'note' ? 20 : 24,
+            strokeColor: kind === 'note' ? '#2a8b69' : '#252846',
             roughness: 0,
           },
         ]);
@@ -1254,6 +1226,13 @@ function PageEditor({
           files = editor.getFiles();
         const name = board.title;
         if (type === 'scene') {
+          const allSlides = current.current.flatMap((e) =>
+            (presentationOf(e)?.slides || []).map((slide) => ({
+              type: 'image',
+              fileId: slide.fileId,
+            })),
+          );
+          await loadFiles(allSlides, editor);
           download(
             new Blob(
               [
@@ -1262,9 +1241,10 @@ function PageEditor({
                     type: 'excalidraw',
                     version: 2,
                     source: 'osnova',
-                    elements,
-                    appState: { viewBackgroundColor: appState.viewBackgroundColor },
-                    files,
+                    elements: current.current,
+                    appState: { viewBackgroundColor: '#fff' },
+                    osnova: { background: board.background || 'white' },
+                    files: fileData.current,
                   },
                   null,
                   2,
@@ -1276,14 +1256,34 @@ function PageEditor({
           );
           return;
         }
-        if (!elements.length) throw new Error('На странице пока нет объектов для экспорта');
-        const blob = await exportToBlob({
+        if (!elements.length) throw new Error('На холсте пока нет объектов для экспорта');
+        const rendered = await exportToCanvas({
           elements,
-          appState: { ...appState, exportBackground: true, exportWithDarkMode: false },
+          appState: {
+            ...appState,
+            exportBackground: false,
+            exportWithDarkMode: false,
+            exportScale: 1,
+          },
           files,
-          mimeType: 'image/png',
           exportPadding: 24,
+          getDimensions: (width: number, height: number) => ({ width, height, scale: 1 }),
         });
+        const canvas = document.createElement('canvas');
+        canvas.width = rendered.width;
+        canvas.height = rendered.height;
+        const ctx = canvas.getContext('2d')!;
+        const [minX, minY] = getCommonBounds(elements);
+        paintBackground(
+          ctx,
+          canvas.width,
+          canvas.height,
+          board.background || 'white',
+          24 - minX,
+          24 - minY,
+        );
+        ctx.drawImage(rendered, 0, 0);
+        const blob = await canvasBlob(canvas);
         if (type === 'png') download(blob, `${name}.png`);
         else {
           const pdf = await PDFDocument.create(),
@@ -1313,76 +1313,200 @@ function PageEditor({
     );
   if (!initial) return <Busy />;
   return (
-    <Excalidraw
-      excalidrawAPI={setEditor}
-      initialData={initial}
-      langCode="ru-RU"
-      theme="light"
-      name={board.title}
-      viewModeEnabled={readOnly}
-      isCollaborating={true}
-      validateEmbeddable={false}
-      aiEnabled={false}
-      UIOptions={{
-        canvasActions: {
-          loadScene: !readOnly,
-          saveToActiveFile: false,
-          export: false,
-          changeViewBackgroundColor: true,
-          toggleTheme: false,
-        },
-      }}
-      onChange={(elements, _state, files) => {
-        if (!ready.current) return;
-        const next = new Map<string, any>(elements.map((e) => [e.id, e]));
-        if (!readOnly)
-          for (const e of base.current.values())
-            if (!next.has(e.id))
-              next.set(e.id, {
-                ...e,
-                isDeleted: true,
-                version: e.version + 1,
-                versionNonce: Math.floor(Math.random() * 2 ** 30),
-                updated: Date.now(),
-              });
-        current.current = [...next.values()];
-        fileData.current = files;
-        if (readOnly) return;
-        const dirty = diff();
-        if (!dirty.length) return;
-        onSave(navigator.onLine ? 'saving' : 'offline');
-        void persist();
-        clearTimeout(timer.current);
-        timer.current = setTimeout(() => void flush(), 450);
-      }}
-      onPointerUpdate={(payload) =>
-        socketRef.current?.emit('cursor', { x: payload.pointer.x, y: payload.pointer.y })
-      }
-    >
-      <MainMenu>
-        {!readOnly && <MainMenu.DefaultItems.LoadScene />}
-        <MainMenu.DefaultItems.SaveAsImage />
-        <MainMenu.DefaultItems.SearchMenu />
-        <MainMenu.DefaultItems.ClearCanvas />
-        <MainMenu.DefaultItems.ChangeCanvasBackground />
-        <MainMenu.DefaultItems.Help />
-      </MainMenu>
-      <WelcomeScreen>
-        <WelcomeScreen.Center>
-          <WelcomeScreen.Center.Logo>
-            <span className="canvas-welcome-logo">
-              основа<span>.</span>
-            </span>
-          </WelcomeScreen.Center.Logo>
-          <WelcomeScreen.Center.Heading>Каждый урок — новое открытие</WelcomeScreen.Center.Heading>
-          <div className="canvas-welcome-text">
-            Начните с текста, рисунка или загрузите рабочий лист.
-            <br />
-            Всё сохранится в вашем пространстве.
-          </div>
-        </WelcomeScreen.Center>
-      </WelcomeScreen>
-    </Excalidraw>
+    <>
+      <div
+        className="canvas-paper"
+        data-background={board.background || 'white'}
+        style={backgroundStyle(board.background || 'white', view.zoom, view.scrollX, view.scrollY)}
+      />
+      <Excalidraw
+        excalidrawAPI={setEditor}
+        initialData={initial}
+        langCode="ru-RU"
+        theme="light"
+        name={board.title}
+        viewModeEnabled={readOnly}
+        isCollaborating={true}
+        validateEmbeddable={false}
+        aiEnabled={false}
+        UIOptions={{
+          canvasActions: {
+            loadScene: !readOnly,
+            saveToActiveFile: false,
+            export: false,
+            changeViewBackgroundColor: false,
+            toggleTheme: false,
+          },
+        }}
+        onChange={(elements, state, files) => {
+          setView((v) =>
+            v.scrollX === state.scrollX &&
+            v.scrollY === state.scrollY &&
+            v.zoom === state.zoom.value &&
+            v.width === state.width &&
+            v.height === state.height
+              ? v
+              : {
+                  scrollX: state.scrollX,
+                  scrollY: state.scrollY,
+                  zoom: state.zoom.value,
+                  width: state.width,
+                  height: state.height,
+                },
+          );
+          if (!ready.current) return;
+          if (state.gridModeEnabled) editor?.updateScene({ appState: { gridModeEnabled: false } });
+          const priorIds = new Set(current.current.map((e) => e.id));
+          for (const element of elements)
+            if (!priorIds.has(element.id)) newElements.current.add(element.id);
+          const captured = captureCanvas(elements, current.current, {
+            attachNew: !pointerDown.current,
+            attachIds: newElements.current,
+            transform: !pointerDown.current,
+          });
+          for (const element of captured)
+            if (element.customData?.slideAnnotation) newElements.current.delete(element.id);
+          const next = new Map<string, any>(captured.map((e) => [e.id, e]));
+          if (!readOnly)
+            for (const e of base.current.values())
+              if (!next.has(e.id))
+                next.set(
+                  e.id,
+                  slideIsHidden(e, current.current)
+                    ? e
+                    : {
+                        ...e,
+                        isDeleted: true,
+                        version: e.version + 1,
+                        versionNonce: Math.floor(Math.random() * 2 ** 30),
+                        updated: Date.now(),
+                      },
+                );
+          current.current = [...next.values()].map((e) => ({ ...e }));
+          fileData.current = files;
+          publishDecks();
+          if (readOnly) return;
+          if (
+            !pointerDown.current &&
+            (captured.some((e, i) => fingerprint(e) !== fingerprint(elements[i])) ||
+              projectCanvas(captured).some((e, i) => e.isDeleted !== elements[i]?.isDeleted))
+          )
+            renderScene();
+          const dirty = diff();
+          if (!dirty.length) return;
+          onSave(navigator.onLine ? 'saving' : 'offline');
+          void persist();
+          clearTimeout(timer.current);
+          timer.current = setTimeout(() => void flush(), 450);
+        }}
+        onScrollChange={(scrollX, scrollY, zoom) =>
+          setView((v) => ({ ...v, scrollX, scrollY, zoom: zoom.value }))
+        }
+        onPointerUpdate={(payload) =>
+          socketRef.current?.emit('cursor', { x: payload.pointer.x, y: payload.pointer.y })
+        }
+      >
+        <MainMenu>
+          {!readOnly && <MainMenu.DefaultItems.LoadScene />}
+          <MainMenu.DefaultItems.SearchMenu />
+          {!readOnly && <MainMenu.DefaultItems.ClearCanvas />}
+          <MainMenu.DefaultItems.Help />
+        </MainMenu>
+        <WelcomeScreen>
+          <WelcomeScreen.Center>
+            <WelcomeScreen.Center.Logo>
+              <span className="canvas-welcome-logo">
+                основа<span>.</span>
+              </span>
+            </WelcomeScreen.Center.Logo>
+            <WelcomeScreen.Center.Heading>
+              Каждый урок — новое открытие
+            </WelcomeScreen.Center.Heading>
+            <div className="canvas-welcome-text">
+              Начните с текста, рисунка или загрузите рабочий лист.
+              <br />
+              Всё сохранится в вашем пространстве.
+            </div>
+          </WelcomeScreen.Center>
+        </WelcomeScreen>
+      </Excalidraw>
+      <div className="presentation-overlay">
+        {decks.map((deck) => {
+          const p = presentationOf(deck)!,
+            x = (deck.x + view.scrollX) * view.zoom,
+            y = (deck.y + view.scrollY) * view.zoom,
+            w = deck.width * view.zoom,
+            h = deck.height * view.zoom;
+          if (x + w < 0 || y + h < 50 || x > view.width || y > view.height || w < 40) return null;
+          const width = Math.min(Math.max(w, 270), 480);
+          return (
+            <div
+              className="presentation-controls"
+              key={deck.id}
+              data-presentation-id={deck.id}
+              data-slide-index={p.slideIndex}
+              style={{
+                left: Math.max(8, Math.min(x + (w - width) / 2, view.width - width - 8)),
+                top: Math.min(y + h + 8, view.height - 72),
+                width: Math.min(width, view.width - 16),
+              }}
+            >
+              <div className="presentation-title">
+                <FileText size={14} />
+                <strong title={p.title}>{p.title}</strong>
+                <button
+                  className="icon-btn"
+                  aria-label={`Показать крупно: ${p.title}`}
+                  onClick={() =>
+                    editor?.scrollToContent([deck], {
+                      fitToContent: true,
+                      viewportZoomFactor: 0.75,
+                    })
+                  }
+                >
+                  <Maximize2 size={15} />
+                </button>
+              </div>
+              <div className="presentation-navigation">
+                <button
+                  className="icon-btn"
+                  aria-label={`Предыдущий слайд: ${p.title}`}
+                  disabled={readOnly || !!switching || p.slideIndex === 0}
+                  onClick={() => changeSlide(deck.id, p.slideIndex - 1)}
+                >
+                  <ChevronLeft size={18} />
+                </button>
+                <label>
+                  <span className="sr-only">Слайд презентации {p.title}</span>
+                  <select
+                    value={p.slideIndex}
+                    disabled={readOnly || !!switching}
+                    onChange={(e) => changeSlide(deck.id, Number(e.target.value))}
+                  >
+                    {p.slides.map((_, i) => (
+                      <option key={i} value={i}>
+                        Слайд {i + 1}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <span className="slide-counter">
+                  {p.slideIndex + 1} / {p.slides.length}
+                </span>
+                <button
+                  className="icon-btn"
+                  aria-label={`Следующий слайд: ${p.title}`}
+                  disabled={readOnly || !!switching || p.slideIndex === p.slides.length - 1}
+                  onClick={() => changeSlide(deck.id, p.slideIndex + 1)}
+                >
+                  <ChevronRight size={18} />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </>
   );
 }
 
@@ -1545,7 +1669,7 @@ function BoardHistory({
     return (
       <Confirm
         title="Восстановить версию?"
-        text="Текущая страница попадёт в историю. Участники увидят восстановленную версию."
+        text="Текущий холст попадёт в историю. Участники увидят восстановленную версию."
         onClose={() => setSelected(null)}
         onConfirm={async () => {
           await api(`/pages/${pageId}/restore`, {
@@ -1558,7 +1682,7 @@ function BoardHistory({
       />
     );
   return (
-    <Modal title="История страницы" onClose={onClose}>
+    <Modal title="История холста" onClose={onClose}>
       <p className="muted">
         Последние 50 сохранённых версий. Восстановление доступно преподавателю.
       </p>

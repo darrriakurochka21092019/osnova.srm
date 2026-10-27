@@ -103,6 +103,8 @@ export async function migrate(db: Database) {
     CREATE INDEX IF NOT EXISTS boards_owner ON boards(owner_id);
     CREATE INDEX IF NOT EXISTS pages_board ON pages(board_id,position);
     CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+    ALTER TABLE boards ADD COLUMN IF NOT EXISTS canvas_page_id UUID;
+    ALTER TABLE boards ADD COLUMN IF NOT EXISTS background TEXT NOT NULL DEFAULT 'white';
     CREATE UNIQUE INDEX IF NOT EXISTS notification_dedupe ON records(owner_id,(data->>'dedupeKey')) WHERE kind='notification' AND data->>'dedupeKey' IS NOT NULL;
   `;
   // Each statement is executable both by PostgreSQL and the local PGlite adapter.
