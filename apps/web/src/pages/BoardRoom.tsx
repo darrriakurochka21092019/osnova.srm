@@ -56,7 +56,7 @@ import {
   SaveButton,
 } from '../ui';
 import { InviteDialog } from './editors';
-import { readDraft, writeDraft, type OfflineDraft } from '../board/offline';
+import { readDraft, writeDraft, pruneDraftFiles, type OfflineDraft } from '../board/offline';
 import type {
   Asset,
   Board,
@@ -66,7 +66,7 @@ import type {
 } from '../../../../packages/contracts';
 
 import { backgrounds, backgroundStyle, paintBackground } from '../board/background';
-import { captureCanvas } from '../board/canvas';
+import { captureCanvas, snapshotCanvas } from '../board/canvas';
 import {
   presentationOf,
   projectCanvas,
@@ -719,7 +719,7 @@ function PageEditor({
   pageId,
   readOnly,
   handleRef,
-  onSave,
+  onSave: updateSaveState,
   onPeers,
   onConflict,
   onPages,
@@ -746,8 +746,22 @@ function PageEditor({
     [switching, setSwitching] = useState('');
   const deckStamp = useRef('');
   const pointerDown = useRef(false),
-    newElements = useRef(new Set<string>()),
-    dragStart = useRef<any[] | null>(null);
+    dragStart = useRef<any[] | null>(null),
+    gestureEpoch = useRef(0),
+    gestureWaiters = useRef<(() => void)[]>([]),
+    remoteQueue = useRef<any[]>([]),
+    deferredRender = useRef(false),
+    nativeScene = useRef<{ elements: readonly any[]; version: number } | null>(null),
+    viewRef = useRef(view),
+    saveStamp = useRef(''),
+    persistTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
+    persistTask = useRef<Promise<void> | null>(null),
+    persistAgain = useRef(false),
+    cursor = useRef<{
+      at: number;
+      point: { x: number; y: number } | null;
+      timer?: ReturnType<typeof setTimeout>;
+    }>({ at: 0, point: null });
   const base = useRef(new Map<string, any>()),
     current = useRef<any[]>([]),
     fileData = useRef<BinaryFiles>({}),
@@ -763,6 +777,43 @@ function PageEditor({
     collaborators = useRef(new Map<string, any>()),
     storageOkay = useRef(true);
   const key = `${user.id}:${pageId}`;
+  const onSave = (state: SaveState, error?: string) => {
+    const stamp = `${state}:${error || ''}`;
+    if (stamp === saveStamp.current) return;
+    saveStamp.current = stamp;
+    updateSaveState(state, error);
+  };
+  const updateView = (next: typeof view) => {
+    const before = viewRef.current;
+    if (
+      Object.keys(next).every(
+        (key) => next[key as keyof typeof next] === before[key as keyof typeof next],
+      )
+    )
+      return;
+    viewRef.current = next;
+    setView(next);
+  };
+  const waitForGestureEnd = () =>
+    pointerDown.current
+      ? new Promise<void>((resolve) => gestureWaiters.current.push(resolve))
+      : Promise.resolve();
+  const releaseGestureWaiters = () => {
+    for (const resolve of gestureWaiters.current.splice(0)) resolve();
+  };
+  const sendCursor = (point: { x: number; y: number }) => {
+    cursor.current.point = point;
+    if (cursor.current.timer) return;
+    const send = () => {
+      cursor.current.timer = undefined;
+      cursor.current.at = performance.now();
+      if (socketRef.current?.connected && cursor.current.point)
+        socketRef.current.volatile.emit('cursor', cursor.current.point);
+    };
+    const delay = Math.max(0, 50 - (performance.now() - cursor.current.at));
+    if (delay) cursor.current.timer = setTimeout(send, delay);
+    else send();
+  };
   const publishDecks = () => {
     const next = current.current.filter((e) => !e.isDeleted && presentationOf(e));
     const stamp = next.map((e) => `${e.id}:${fingerprint(e)}`).join('|');
@@ -774,6 +825,11 @@ function PageEditor({
   const renderScene = (
     captureUpdate: (typeof CaptureUpdateAction)[keyof typeof CaptureUpdateAction] = CaptureUpdateAction.NEVER,
   ) => {
+    if (pointerDown.current) {
+      deferredRender.current = true;
+      return;
+    }
+    deferredRender.current = false;
     const native = new Map(editor?.getSceneElementsIncludingDeleted().map((e) => [e.id, e]));
     editor?.updateScene({
       // Keep native references for unchanged objects so autosave/remote edits cannot interrupt a stroke.
@@ -791,32 +847,93 @@ function PageEditor({
   };
   const diff = () =>
     current.current.filter((e) => fingerprint(e) !== fingerprint(base.current.get(e.id)));
-  const persist = async () => {
-    if (readOnly) return;
-    try {
-      await writeDraft(
-        key,
-        diff().length || pendingOperation.current
-          ? {
-              elements: current.current,
-              base: [...base.current.values()],
-              files: fileData.current,
-              pending: pendingOperation.current,
-            }
-          : null,
-      );
-      storageOkay.current = true;
-    } catch {
-      storageOkay.current = false;
-      onSave(
-        'error',
-        'Браузер не смог сохранить локальную очередь. Не закрывайте страницу до подтверждения сервера.',
-      );
+  const persist = (): Promise<void> => {
+    if (readOnly) return Promise.resolve();
+    if (persistTask.current) {
+      persistAgain.current = true;
+      return persistTask.current;
     }
+    persistTask.current = (async () => {
+      do {
+        persistAgain.current = false;
+        await waitForGestureEnd();
+        await writeDraft(
+          key,
+          diff().length || pendingOperation.current
+            ? {
+                elements: current.current,
+                base: [...base.current.values()],
+                files: fileData.current,
+                pending: pendingOperation.current,
+              }
+            : null,
+        );
+        storageOkay.current = true;
+        if (mounted.current && !navigator.onLine && diff().length) onSave('offline');
+      } while (persistAgain.current);
+    })()
+      .catch((error) => {
+        storageOkay.current = false;
+        onSave(
+          'error',
+          error?.message?.includes('вкладки')
+            ? error.message
+            : 'Браузер не смог сохранить локальную очередь. Не закрывайте страницу до подтверждения сервера.',
+        );
+      })
+      .finally(() => {
+        persistTask.current = null;
+      });
+    return persistTask.current;
+  };
+  const queueSave = () => {
+    if (readOnly || !diff().length) return;
+    onSave('saving');
+    if (!persistTimer.current)
+      persistTimer.current = setTimeout(() => {
+        persistTimer.current = undefined;
+        void persist();
+      }, 120);
+    if (!timer.current)
+      timer.current = setTimeout(() => {
+        timer.current = undefined;
+        void flush();
+      }, 400);
+  };
+  const captureRendered = (elements: readonly any[], before = current.current) => {
+    nativeScene.current = { elements, version: elements.reduce((n, e) => n + e.version, 0) };
+    const captured = captureCanvas(elements, before);
+    const next = new Map(captured.map((e) => [e.id, e]));
+    const index = new Map(before.map((e) => [e.id, e]));
+    for (const e of base.current.values())
+      if (!next.has(e.id))
+        next.set(
+          e.id,
+          slideIsHidden(e, before, index) ? e : changedElement(e, { isDeleted: true }),
+        );
+    current.current = snapshotCanvas([...next.values()], current.current);
+    publishDecks();
+    const projected = projectCanvas(current.current);
+    if (
+      projected.length !== elements.length ||
+      projected.some(
+        (e, i) =>
+          fingerprint(e) !== fingerprint(elements[i]) || e.isDeleted !== elements[i]?.isDeleted,
+      )
+    )
+      renderScene();
+    queueSave();
   };
   const loadFiles = async (elements: any[], apiEditor?: ExcalidrawImperativeAPI) => {
     const needed = new Set(
-      elements.filter((e) => e.type === 'image' && !e.isDeleted).map((e) => e.fileId),
+      elements
+        .filter(
+          (e) =>
+            e.type === 'image' &&
+            !e.isDeleted &&
+            (!fileData.current[e.fileId as keyof BinaryFiles] || !knownFiles.current.has(e.fileId)),
+        )
+        .map((e) => e.fileId),
     );
     if (!needed.size) return;
     const assets = await api<Asset[]>(`/boards/${board.id}/files`);
@@ -898,14 +1015,28 @@ function PageEditor({
     return () => {
       mounted.current = false;
       clearTimeout(timer.current);
+      clearTimeout(persistTimer.current);
+      pointerDown.current = false;
+      gestureEpoch.current++;
+      releaseGestureWaiters();
       handleRef.current = null;
-      void persist();
+      void persist()
+        .then(() => pruneDraftFiles(key))
+        .catch(() => {});
     };
   }, [pageId]);
   const applyRemote = async (payload: any) => {
     if (ownOperations.current.has(payload.operationId)) return;
+    if (pointerDown.current) {
+      remoteQueue.current.push(payload);
+      return;
+    }
     revision.current = Math.max(revision.current, payload.revision || 0);
     await loadFiles(payload.elements, editor || undefined);
+    if (pointerDown.current) {
+      remoteQueue.current.push(payload);
+      return;
+    }
     const scene = new Map(current.current.map((e) => [e.id, e]));
     for (const e of payload.elements) {
       const known = base.current.get(e.id);
@@ -921,7 +1052,10 @@ function PageEditor({
   };
   const flush = async () => {
     if (readOnly || !ready.current || running.current) return;
+    await waitForGestureEnd();
+    if (!ready.current || running.current) return;
     clearTimeout(timer.current);
+    timer.current = undefined;
     const dirty = diff();
     if (!dirty.length && !pendingOperation.current) {
       onSave('saved');
@@ -929,8 +1063,8 @@ function PageEditor({
       return;
     }
     if (!navigator.onLine) {
-      onSave('offline');
       await persist();
+      if (storageOkay.current) onSave('offline');
       return;
     }
     running.current = true;
@@ -964,6 +1098,8 @@ function PageEditor({
         operationId: operation.id,
         changes: operation.changes,
       });
+      await waitForGestureEnd();
+      if (!mounted.current) return;
       const scene = new Map(current.current.map((e) => [e.id, e]));
       const attempted = new Map(operation.changes.map((c) => [c.element.id, c.element]));
       for (const e of result.elements) {
@@ -982,7 +1118,8 @@ function PageEditor({
       current.current = [...scene.values()];
       revision.current = Math.max(revision.current, result.revision);
       pendingOperation.current = null;
-      renderScene();
+      // A successful acknowledgement changes no visible objects. Only conflicts need reconciliation.
+      if (result.conflicts.length) renderScene();
       await persist();
       onSave(diff().length ? 'saving' : 'saved');
     } catch (e) {
@@ -1021,27 +1158,32 @@ function PageEditor({
       void flush();
     };
     initialFrame = requestAnimationFrame(initialize);
-    const stopPointerDown = editor.onPointerDown(() => {
+    const stopPointerDown = editor.onPointerDown((tool) => {
       pointerDown.current = true;
-      dragStart.current = current.current.map((e) => ({
-        ...e,
-        ...(e.points ? { points: e.points.map((point: number[]) => [...point]) } : {}),
-      }));
+      gestureEpoch.current++;
+      if (!readOnly && tool.type === 'freedraw') onSave('saving');
+      // Committed elements are immutable; there is no need to copy every prior stroke here.
+      dragStart.current = current.current;
     });
-    let pointerFrame = 0;
     const stopPointerUp = editor.onPointerUp(() => {
-      pointerDown.current = false;
-      pointerFrame = requestAnimationFrame(() => {
-        if (readOnly || !ready.current) return;
-        const rendered = editor.getSceneElementsIncludingDeleted();
-        current.current = captureCanvas(rendered, dragStart.current || current.current, {
-          attachIds: newElements.current,
-        }).map((e) => ({ ...e }));
+      const epoch = gestureEpoch.current;
+      // Excalidraw finalizes pressure/last point after emitting pointerup. A microtask runs
+      // after that finalizer, before the next physical pen contact; a RAF can overlap it.
+      queueMicrotask(() => {
+        if (epoch !== gestureEpoch.current || !mounted.current) return;
+        pointerDown.current = false;
+        if (!readOnly && ready.current)
+          captureRendered(
+            editor.getSceneElementsIncludingDeleted(),
+            dragStart.current || current.current,
+          );
         dragStart.current = null;
-        newElements.current.clear();
-        renderScene();
-        void persist();
-        void flush();
+        releaseGestureWaiters();
+        if (deferredRender.current) renderScene();
+        const queued = remoteQueue.current.splice(0);
+        void (async () => {
+          for (const payload of queued) await applyRemote(payload);
+        })().catch((e) => onSave('error', e.message));
       });
     });
     const socket = io({ withCredentials: true });
@@ -1097,7 +1239,9 @@ function PageEditor({
       cancelAnimationFrame(initialFrame);
       stopPointerDown();
       stopPointerUp();
-      cancelAnimationFrame(pointerFrame);
+      pointerDown.current = false;
+      gestureEpoch.current++;
+      releaseGestureWaiters();
       onSave('error', 'Доступ к доске закрыт. Локальные изменения сохранены на устройстве.');
       editor.updateScene({ appState: { viewModeEnabled: true } });
     });
@@ -1105,7 +1249,7 @@ function PageEditor({
       void flush();
     };
     const close = (e: BeforeUnloadEvent) => {
-      if (diff().length || pendingOperation.current) {
+      if (pointerDown.current || diff().length || pendingOperation.current) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -1114,6 +1258,15 @@ function PageEditor({
     window.addEventListener('beforeunload', close);
     return () => {
       ready.current = false;
+      cancelAnimationFrame(initialFrame);
+      stopPointerDown();
+      stopPointerUp();
+      pointerDown.current = false;
+      gestureEpoch.current++;
+      releaseGestureWaiters();
+      clearTimeout(cursor.current.timer);
+      cursor.current.point = null;
+      socketRef.current = null;
       socket.disconnect();
       window.removeEventListener('online', online);
       window.removeEventListener('beforeunload', close);
@@ -1339,72 +1492,29 @@ function PageEditor({
           },
         }}
         onChange={(elements, state, files) => {
-          setView((v) =>
-            v.scrollX === state.scrollX &&
-            v.scrollY === state.scrollY &&
-            v.zoom === state.zoom.value &&
-            v.width === state.width &&
-            v.height === state.height
-              ? v
-              : {
-                  scrollX: state.scrollX,
-                  scrollY: state.scrollY,
-                  zoom: state.zoom.value,
-                  width: state.width,
-                  height: state.height,
-                },
-          );
+          updateView({
+            scrollX: state.scrollX,
+            scrollY: state.scrollY,
+            zoom: state.zoom.value,
+            width: state.width,
+            height: state.height,
+          });
           if (!ready.current) return;
           if (state.gridModeEnabled) editor?.updateScene({ appState: { gridModeEnabled: false } });
-          const priorIds = new Set(current.current.map((e) => e.id));
-          for (const element of elements)
-            if (!priorIds.has(element.id)) newElements.current.add(element.id);
-          const captured = captureCanvas(elements, current.current, {
-            attachNew: !pointerDown.current,
-            attachIds: newElements.current,
-            transform: !pointerDown.current,
-          });
-          for (const element of captured)
-            if (element.customData?.slideAnnotation) newElements.current.delete(element.id);
-          const next = new Map<string, any>(captured.map((e) => [e.id, e]));
-          if (!readOnly)
-            for (const e of base.current.values())
-              if (!next.has(e.id))
-                next.set(
-                  e.id,
-                  slideIsHidden(e, current.current)
-                    ? e
-                    : {
-                        ...e,
-                        isDeleted: true,
-                        version: e.version + 1,
-                        versionNonce: Math.floor(Math.random() * 2 ** 30),
-                        updated: Date.now(),
-                      },
-                );
-          current.current = [...next.values()].map((e) => ({ ...e }));
           fileData.current = files;
-          publishDecks();
-          if (readOnly) return;
-          if (
-            !pointerDown.current &&
-            (captured.some((e, i) => fingerprint(e) !== fingerprint(elements[i])) ||
-              projectCanvas(captured).some((e, i) => e.isDeleted !== elements[i]?.isDeleted))
-          )
-            renderScene();
-          const dirty = diff();
-          if (!dirty.length) return;
-          onSave(navigator.onLine ? 'saving' : 'offline');
-          void persist();
-          clearTimeout(timer.current);
-          timer.current = setTimeout(() => void flush(), 450);
+          // The live stroke belongs to the native engine. Do not clone, project, save or
+          // reconcile it on each sample (a pen may send hundreds of samples per second).
+          if (pointerDown.current || readOnly) return;
+          const version = elements.reduce((n, e) => n + e.version, 0);
+          if (nativeScene.current?.elements === elements && nativeScene.current.version === version)
+            return;
+          nativeScene.current = { elements, version };
+          captureRendered(elements);
         }}
         onScrollChange={(scrollX, scrollY, zoom) =>
-          setView((v) => ({ ...v, scrollX, scrollY, zoom: zoom.value }))
+          updateView({ ...viewRef.current, scrollX, scrollY, zoom: zoom.value })
         }
-        onPointerUpdate={(payload) =>
-          socketRef.current?.emit('cursor', { x: payload.pointer.x, y: payload.pointer.y })
-        }
+        onPointerUpdate={(payload) => sendCursor({ x: payload.pointer.x, y: payload.pointer.y })}
       >
         <MainMenu>
           {!readOnly && <MainMenu.DefaultItems.LoadScene />}

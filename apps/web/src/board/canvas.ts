@@ -13,11 +13,17 @@ export function captureCanvas(
 ) {
   const old = new Map(previous.map((e) => [e.id, e]));
   const decks = rendered.filter((e) => !e.isDeleted && presentationOf(e));
+  const decksById = new Map(decks.map((e) => [e.id, e]));
+  const frontToBack = [...decks].reverse();
   const elements = rendered.map((e) => {
     const before = old.get(e.id);
     if (presentationOf(e) && e.angle && options.transform !== false)
       return changedElement(e, { angle: 0 });
-    if (before && slideIsHidden(before, previous)) return before;
+    if (before && slideIsHidden(before, previous, old)) {
+      // The renderer can normalize old/imported indices or geometry. Keep that version
+      // while undoing only the virtual deletion; otherwise normalization loops forever.
+      return e.version > before.version ? { ...e, isDeleted: before.isDeleted } : before;
+    }
     if (
       (before && !options.attachIds?.has(e.id)) ||
       e.isDeleted ||
@@ -26,15 +32,13 @@ export function captureCanvas(
       options.attachNew === false
     )
       return e;
-    const deck = [...decks]
-      .reverse()
-      .find(
-        (d) =>
-          e.x + e.width / 2 >= d.x &&
-          e.x + e.width / 2 <= d.x + d.width &&
-          e.y + e.height / 2 >= d.y &&
-          e.y + e.height / 2 <= d.y + d.height,
-      );
+    const deck = frontToBack.find(
+      (d) =>
+        e.x + e.width / 2 >= d.x &&
+        e.x + e.width / 2 <= d.x + d.width &&
+        e.y + e.height / 2 >= d.y &&
+        e.y + e.height / 2 <= d.y + d.height,
+    );
     return deck
       ? changedElement(e, {
           customData: {
@@ -53,7 +57,7 @@ export function captureCanvas(
     : elements.map((e) => {
         const annotation = annotationOf(e);
         if (!annotation) return e;
-        const deck = decks.find((d) => d.id === annotation.presentationId),
+        const deck = decksById.get(annotation.presentationId),
           prior = deck && old.get(deck.id);
         if (!deck || !prior || !old.has(e.id)) return e;
         const sx = deck.width / prior.width,
@@ -81,4 +85,18 @@ export function captureCanvas(
           ...(e.type === 'text' ? { fontSize: source.fontSize * Math.min(sx, sy) } : {}),
         });
       });
+}
+
+/** Keep committed state separate from Excalidraw's mutable live elements. Clone only changed objects. */
+export function snapshotCanvas(elements: readonly any[], previous: readonly any[]) {
+  const old = new Map(previous.map((e) => [e.id, e]));
+  return elements.map((e) => {
+    const before = old.get(e.id);
+    return before &&
+      before.version === e.version &&
+      before.versionNonce === e.versionNonce &&
+      before.isDeleted === e.isDeleted
+      ? before
+      : structuredClone(e);
+  });
 }

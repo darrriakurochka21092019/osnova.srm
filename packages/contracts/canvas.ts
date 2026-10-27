@@ -18,16 +18,23 @@ export function annotationOf(
 ): { presentationId: string; slideIndex: number } | undefined {
   return element.customData?.slideAnnotation;
 }
-export function slideIsHidden(element: any, scene: readonly any[]): boolean {
+export function slideIsHidden(
+  element: any,
+  scene: readonly any[],
+  index?: ReadonlyMap<string, any>,
+): boolean {
   const annotation = annotationOf(element);
   if (!annotation) return false;
-  const deck = scene.find((e) => e.id === annotation.presentationId);
+  const deck = index
+    ? index.get(annotation.presentationId)
+    : scene.find((e) => e.id === annotation.presentationId);
   const presentation = deck && presentationOf(deck);
   return !!presentation && (deck.isDeleted || presentation.slideIndex !== annotation.slideIndex);
 }
 // Visibility is a local rendering projection, not a persisted deletion or a new version.
 export function projectCanvas(scene: readonly any[]) {
-  return scene.map((e) => (slideIsHidden(e, scene) ? { ...e, isDeleted: true } : e));
+  const index = new Map(scene.map((e) => [e.id, e]));
+  return scene.map((e) => (slideIsHidden(e, scene, index) ? { ...e, isDeleted: true } : e));
 }
 export function changedElement(element: any, patch: Record<string, any>) {
   return {

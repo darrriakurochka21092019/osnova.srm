@@ -181,16 +181,113 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   const presentation = importedScene.scene.find((e: any) => e.customData?.presentation);
   expect(presentation.customData.presentation.slides).toHaveLength(2);
   expect(presentation.locked).toBe(false);
+  // Keep a substantial set of notes on another slide while handwriting on this one.
+  await post(`/pages/${pageId}/operations`, {
+    operationId: crypto.randomUUID(),
+    changes: Array.from({ length: 600 }, (_, i) => ({
+      baseVersion: null,
+      element: {
+        id: `prior-ink-${i}`,
+        index: `b${i.toString(36).padStart(2, '0')}`,
+        type: 'freedraw',
+        version: 1,
+        versionNonce: i + 1,
+        x: presentation.x + 20 + (i % 30) * 12,
+        y: presentation.y + 20 + Math.floor(i / 30) * 12,
+        width: 10,
+        height: 5,
+        angle: 0,
+        strokeColor: '#252846',
+        strokeWidth: 2,
+        strokeStyle: 'solid',
+        fillStyle: 'solid',
+        backgroundColor: 'transparent',
+        roughness: 0,
+        opacity: 100,
+        seed: i + 1,
+        groupIds: [],
+        frameId: null,
+        boundElements: null,
+        roundness: null,
+        link: null,
+        locked: false,
+        updated: Date.now(),
+        points: Array.from({ length: 16 }, (_, p) => [(p * 10) / 15, Math.sin(p) * 5]),
+        pressures: [],
+        simulatePressure: true,
+        isDeleted: false,
+        customData: { slideAnnotation: { presentationId: presentation.id, slideIndex: 1 } },
+      },
+    })),
+  });
+  await page.reload();
+  await expect(page.locator('.slide-counter')).toHaveText('1 / 2');
+  await expect.poll(async () => (await downloadScene()).elements.length).toBeGreaterThan(600);
+  await page.evaluate(() => {
+    const metrics = ((window as any).__inkMetrics = {
+      duringPen: 0,
+      pages: 0,
+      files: 0,
+      inlineFileBytes: 0,
+      down: false,
+    });
+    window.addEventListener(
+      'pointerdown',
+      (e) => {
+        if (e.pointerType === 'pen') metrics.down = true;
+      },
+      true,
+    );
+    window.addEventListener(
+      'pointerup',
+      (e) => {
+        if (e.pointerType === 'pen') metrics.down = false;
+      },
+      true,
+    );
+    const original = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value, key) {
+      if (this.name === 'pages') {
+        metrics.pages++;
+        if (metrics.down) metrics.duringPen++;
+        metrics.inlineFileBytes += Object.values(value.files || {}).reduce(
+          (n: number, f: any) => n + (f.dataURL?.length || 0),
+          0,
+        );
+      }
+      if (this.name === 'files') metrics.files++;
+      return original.call(this, value, key!);
+    };
+  });
   const box = await page.locator('.presentation-controls').boundingBox();
   expect(box).toBeTruthy();
   await page.getByRole('button', { name: 'Ручка', exact: true }).click();
-  await page.mouse.move(box!.x + box!.width * 0.4, box!.y - 100);
-  await page.mouse.down();
-  await page.mouse.move(box!.x + box!.width * 0.4 + 30, box!.y - 95, { steps: 4 });
+  const pen = await teacher.newCDPSession(page);
+  const penEvent = (
+    type: 'mousePressed' | 'mouseMoved' | 'mouseReleased',
+    x: number,
+    y: number,
+    pressure = 0.4,
+  ) =>
+    pen.send('Input.dispatchMouseEvent', {
+      type,
+      x,
+      y,
+      pointerType: 'pen',
+      button: type === 'mouseMoved' ? 'none' : 'left',
+      buttons: type === 'mouseReleased' ? 0 : 1,
+      force: type === 'mouseReleased' ? 0 : pressure,
+    });
+  const inkX = box!.x + box!.width * 0.4,
+    inkY = box!.y - 100;
+  await penEvent('mousePressed', inkX, inkY);
+  for (let i = 1; i <= 4; i++)
+    await penEvent('mouseMoved', inkX + i * 7.5, inkY + i, 0.3 + i * 0.1);
   // Pausing past the autosave debounce must not end an unfinished native stroke.
   await page.waitForTimeout(650);
-  await page.mouse.move(box!.x + box!.width * 0.4 + 100, box!.y - 90, { steps: 8 });
-  await page.mouse.up();
+  for (let i = 1; i <= 8; i++)
+    await penEvent('mouseMoved', inkX + 30 + i * 8.75, inkY + 4 + i, 0.7);
+  await penEvent('mouseReleased', inkX + 100, inkY + 12);
   await expect(page.locator('.save-state')).toContainText('Сохранено');
   await expect
     .poll(async () => {
@@ -206,9 +303,72 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
     (e: any) =>
       e.type === 'freedraw' &&
       e.customData?.slideAnnotation?.presentationId === presentation.id &&
+      e.customData.slideAnnotation.slideIndex === 0 &&
       !e.isDeleted,
   );
   expect(inkBefore.width).toBeGreaterThan(80);
+  expect(inkBefore.simulatePressure).toBe(false);
+  expect(inkBefore.pressures.some((p: number) => p > 0)).toBeTruthy();
+  const metrics = await page.evaluate(() => (window as any).__inkMetrics);
+  await testInfo.attach('stylus-storage.json', {
+    body: JSON.stringify(metrics),
+    contentType: 'application/json',
+  });
+  expect(metrics.duringPen, 'Storage must not run in the active stylus input path').toBe(0);
+  expect(
+    metrics.inlineFileBytes,
+    'Image binaries must not be rewritten inside scene checkpoints',
+  ).toBe(0);
+  for (let i = 0; i < 12; i++) {
+    const x = inkX - 100 + i * 12,
+      y = inkY - 65;
+    await penEvent('mousePressed', x, y);
+    await penEvent('mouseMoved', x + 4, y + 14, 0.8);
+    await penEvent('mouseReleased', x + 8, y + 2);
+  }
+  await expect
+    .poll(async () => {
+      const snapshot = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
+      return snapshot.scene.filter(
+        (e: any) =>
+          e.type === 'freedraw' && e.customData?.slideAnnotation?.slideIndex === 0 && !e.isDeleted,
+      ).length;
+    })
+    .toBe(13);
+  const afterRapid = await page.evaluate(() => (window as any).__inkMetrics);
+  expect(afterRapid.duringPen).toBe(0);
+  expect(afterRapid.files).toBe(metrics.files);
+  expect(afterRapid.inlineFileBytes).toBe(0);
+  // Recover pressure-sensitive ink and cached slide binaries after a failed save and reload.
+  await expect(page.locator('.save-state')).toContainText('Сохранено');
+  await page.route('**/api/v1/pages/*/operations', (route) => route.abort('internetdisconnected'));
+  await penEvent('mousePressed', inkX - 40, inkY - 35);
+  await penEvent('mouseMoved', inkX - 30, inkY - 20, 0.8);
+  await penEvent('mouseReleased', inkX - 20, inkY - 35);
+  await expect(page.locator('.save-state')).toContainText('Нет связи');
+  await page.reload();
+  await expect(page.locator('.slide-counter')).toHaveText('1 / 2');
+  const recovered = await downloadScene();
+  expect(
+    recovered.elements.filter(
+      (e: any) =>
+        e.type === 'freedraw' && e.customData?.slideAnnotation?.slideIndex === 0 && !e.isDeleted,
+    ),
+  ).toHaveLength(14);
+  expect(Object.keys(recovered.files).length).toBeGreaterThanOrEqual(2);
+  await page.unroute('**/api/v1/pages/*/operations');
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await expect(page.locator('.save-state')).toContainText('Сохранено');
+  await expect
+    .poll(async () => {
+      const snapshot = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
+      return snapshot.scene.filter(
+        (e: any) =>
+          e.type === 'freedraw' && e.customData?.slideAnnotation?.slideIndex === 0 && !e.isDeleted,
+      ).length;
+    })
+    .toBe(14);
+  await pen.detach();
   const deckBefore = beforeMove.scene.find((e: any) => e.id === presentation.id);
   // Use the native selection tool to move the PDF, then check that its ink follows once.
   await page.keyboard.press('v');
@@ -247,6 +407,9 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
     ),
   ).toBeTruthy();
   await page.screenshot({ path: testInfo.outputPath('unified-canvas.png') });
+  await expect(
+    page.locator('.board-warning').filter({ hasText: 'Другой участник изменил' }),
+  ).toHaveCount(0);
   await page.getByRole('button', { name: 'Экспорт', exact: true }).click();
   const pdfDownload = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Документ PDF', exact: true }).click();
@@ -324,6 +487,14 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
     '/help',
   ];
   for (const width of [1440, 390]) {
+    // Each route mounts the whole workspace store. Give the second pass its own session
+    // so a minute of deliberately dense API traffic does not exhaust the real rate limit.
+    if (width === 390) {
+      const login = await teacher.request.post('http://127.0.0.1:4173/api/v1/auth/login', {
+        data: { email: 'teacher@example.test', password: 'teacher-test-password' },
+      });
+      expect(login.ok()).toBeTruthy();
+    }
     await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
     for (const route of routes) {
       await page.goto(route);
@@ -342,6 +513,93 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
     path: testInfo.outputPath('mobile-dashboard.png'),
     fullPage: true,
   });
+  // An unsent version-1 draft from the previous release survives the IndexedDB upgrade.
+  const legacy = await browser.newContext({ storageState: await request.storageState() });
+  const legacyLogin = await legacy.request.post('http://127.0.0.1:4173/api/v1/auth/login', {
+    data: { email: 'teacher@example.test', password: 'teacher-test-password' },
+  });
+  expect(legacyLogin.ok()).toBeTruthy();
+  const legacyPage = await legacy.newPage();
+  legacyPage.on('pageerror', (e) => errors.push(e.message));
+  await legacyPage.goto('/api/v1/health');
+  const user = await (await legacy.request.get('http://127.0.0.1:4173/api/v1/me')).json();
+  const latest = await (
+    await legacy.request.get(`http://127.0.0.1:4173/api/v1/pages/${pageId}/snapshot`)
+  ).json();
+  const assets = await (
+    await legacy.request.get(`http://127.0.0.1:4173/api/v1/boards/${board.id}/files`)
+  ).json();
+  const slideAsset = assets.find(
+    (f: any) => f.excalidraw_id === presentation.customData.presentation.slides[0].fileId,
+  );
+  const oldInk = {
+    ...latest.scene.find((e: any) => e.type === 'freedraw' && !e.simulatePressure),
+    id: 'legacy-unsent-ink',
+    version: 1,
+    versionNonce: 12345,
+  };
+  await legacyPage.evaluate(
+    async ({ key, base, ink, asset }) => {
+      const blob = await (await fetch(`/api/v1/files/${asset.id}`)).blob();
+      const dataURL = await new Promise<string>((resolve) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result as string);
+        r.readAsDataURL(blob);
+      });
+      await new Promise<void>((resolve, reject) => {
+        const opening = indexedDB.open('osnova-pending', 1);
+        opening.onupgradeneeded = () => opening.result.createObjectStore('pages');
+        opening.onsuccess = () => {
+          const db = opening.result,
+            tx = db.transaction('pages', 'readwrite');
+          tx.objectStore('pages').put(
+            {
+              base,
+              elements: [...base, ink],
+              files: {
+                [asset.excalidraw_id]: {
+                  id: asset.excalidraw_id,
+                  mimeType: asset.mime,
+                  dataURL,
+                  created: Date.now(),
+                },
+              },
+            },
+            key,
+          );
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+        opening.onerror = () => reject(opening.error);
+      });
+    },
+    { key: `${user.id}:${pageId}`, base: latest.scene, ink: oldInk, asset: slideAsset },
+  );
+  await legacyPage.goto(`/board/${board.id}`);
+  await expect(legacyPage.locator('.save-state')).toContainText('Сохранено');
+  await expect
+    .poll(async () => {
+      const snapshot = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
+      return snapshot.scene.some((e: any) => e.id === 'legacy-unsent-ink' && !e.isDeleted);
+    })
+    .toBeTruthy();
+  expect(
+    await legacyPage.evaluate(
+      () =>
+        new Promise<number>((resolve) => {
+          const opening = indexedDB.open('osnova-pending');
+          opening.onsuccess = () => {
+            const version = opening.result.version;
+            opening.result.close();
+            resolve(version);
+          };
+        }),
+    ),
+  ).toBe(2);
+  await legacy.close();
   expect(errors).toEqual([]);
   await teacher.close();
   await guest.close();

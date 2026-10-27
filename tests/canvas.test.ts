@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { unifyLegacyScenes, projectCanvas, presentationOf } from '../packages/contracts/canvas';
-import { captureCanvas } from '../apps/web/src/board/canvas';
+import { captureCanvas, snapshotCanvas } from '../apps/web/src/board/canvas';
 const shape = (id: string, extra: any = {}) => ({
   id,
   type: 'rectangle',
@@ -86,10 +86,35 @@ test('switching slides hides annotations as a projection without deleting them f
   const captured = captureCanvas(visible, scene);
   assert.equal(captured[2].isDeleted, false);
   assert.equal(captured[2].version, 1);
+  const normalized = captureCanvas(
+    [visible[0], visible[1], { ...visible[2], version: 2, index: 'a2' }],
+    scene,
+  );
+  assert.equal(normalized[2].isDeleted, false);
+  assert.equal(normalized[2].version, 2);
+  assert.equal(normalized[2].index, 'a2');
+  assert.deepEqual(captureCanvas(projectCanvas(normalized), normalized), normalized);
   const next = { ...pdf, customData: { presentation: { ...presentationOf(pdf), slideIndex: 1 } } };
   const switched = projectCanvas([next, a, b]);
   assert.equal(switched[1].isDeleted, true);
   assert.equal(switched[2].isDeleted, false);
+});
+
+test('committed ink stays immutable when the native engine mutates live points and pressure', () => {
+  const live = shape('ink', {
+    type: 'freedraw',
+    points: [
+      [0, 0],
+      [10, 8],
+    ],
+    pressures: [0.2, 0.7],
+  });
+  const saved = snapshotCanvas([live], []);
+  live.points[1][0] = 99;
+  live.pressures.push(0.8);
+  assert.equal(saved[0].points[1][0], 10);
+  assert.deepEqual(saved[0].pressures, [0.2, 0.7]);
+  assert.equal(snapshotCanvas([structuredClone(saved[0])], saved)[0], saved[0]);
 });
 test('new ink inside a PDF belongs to that slide; moving/resizing the PDF moves its annotations once', () => {
   const pdf = deck(),
