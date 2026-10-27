@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.env
+data
+backups
+test-results
+playwright-report
+apps/web/public/excalidraw-assets
+apps/web/public/pdf-assets

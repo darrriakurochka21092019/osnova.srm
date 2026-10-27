@@ -1,0 +1,12 @@
+{$DOMAIN} {
+    encode zstd gzip
+    request_body {
+        max_size 26MB
+    }
+    reverse_proxy app:3001
+    header {
+        Referrer-Policy "same-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        -Server
+    }
+}

@@ -1,0 +1,45 @@
+# API v1
+
+Базовый путь `/api/v1`. JSON. Сессионная cookie `osnova_session`. Мутации из браузера проверяют Origin; API и сайт располагаются на одном origin. Ошибки: `{error: string, details?: string[]}`, HTTP 400/401/403/404/409/410/413/415/429/500.
+
+| Метод и путь                       | Сценарий                                                          |
+| ---------------------------------- | ----------------------------------------------------------------- |
+| GET /bootstrap                     | Доступность первоначальной настройки                              |
+| POST /auth/setup                   | Первый преподаватель: name, email, password, setupToken           |
+| POST /auth/login, /auth/logout     | Вход / выход                                                      |
+| GET, PATCH /me                     | Профиль и настройки                                               |
+| POST /auth/password                | currentPassword, newPassword; отзыв старых сеансов                |
+| GET /auth/sessions                 | Активные сеансы без токенов                                       |
+| POST /auth/revoke-other-sessions   | Завершить остальные сеансы                                        |
+| GET, POST /students                | Свои ученики / создать ученика                                    |
+| PATCH /students/:id                | Карточка, программа, пауза                                        |
+| POST /students/:id/invite          | Одноразовое приглашение в кабинет на 7 дней                       |
+| POST /invites/info                 | Проверка токена и вида доступа без раскрытия имени ученика        |
+| POST /invites/redeem               | Обмен токена из URL-fragment на сессию                            |
+| DELETE /invites/:id                | Отзыв приглашения и гостевого сеанса                              |
+| GET, POST /boards                  | Доступные доски / новая доска                                     |
+| GET, PATCH /boards/:id             | Метаданные, страницы / название, архив                            |
+| POST /boards/:id/pages             | Новая страница                                                    |
+| PATCH, DELETE /pages/:id           | Название, порядок / удаление с сохранением хотя бы одной страницы |
+| GET /pages/:id/snapshot            | Сцена и ревизия                                                   |
+| POST /pages/:id/operations         | Идемпотентное элементное изменение                                |
+| GET /pages/:id/history             | Последние 50 снимков                                              |
+| POST /pages/:id/restore            | snapshotId, expectedRevision; восстановление учителем             |
+| GET, POST /boards/:id/invites      | Список без токенов / выдача ссылки                                |
+| GET /boards/:id/members            | Имена и права участников для владельца                            |
+| DELETE /boards/:id/members/:userId | Закрытие доступа и сокета                                         |
+| POST /files                        | Multipart: boardId?, excalidrawId?, file                          |
+| GET /files/:id                     | Проверка доступа и содержимое; `?download=1` — скачивание         |
+| GET /boards/:id/files              | Метаданные файлов доски                                           |
+| GET, POST /records/:kind           | Свои записи / создание учителем                                   |
+| PATCH, DELETE /records/:kind/:id   | Изменение по правам / удаление учителем                           |
+| GET /audit                         | Журнал событий владельца                                          |
+| GET /health                        | Проверка подключения к БД без личных данных                       |
+
+`kind`: lesson, homework, material, result, report, transaction, document, task, note, notification. Точные схемы: `packages/contracts/index.ts`.
+
+Создание записи: `{studentId?: UUID|null, data: {...}}`. PATCH объединяет проверенные поля с имеющейся записью. Ученик может изменять только свой ответ, файлы ответа и статус draft/submitted до проверки; у своего урока — запрос переноса; у своего уведомления — флаг read. Права проверяются сервером, независимо от наличия раздела в меню.
+
+Операция: `{operationId: UUID, changes: [{baseVersion: number|null, element: ExcalidrawElement}]}`. Ответ: `{operationId,pageId,revision,elements,conflicts,duplicate?}`. Подтверждение означает завершённую транзакцию. `isDeleted` хранится как tombstone. Отсутствующий элемент не означает удаления. iframe/embeddable не разрешены.
+
+Socket.IO использует ту же cookie. `join-page {pageId}` → ack `{ok,peers}`; сервер проверяет доступ. Серверные события: `scene-update`, `pages-updated`, `presence`, `cursor`, `notification`, `access-revoked`. Полезная нагрузка курсора ограничивается; сцена передаётся через транзакционное HTTP API. После reconnect повторяется получение snapshot и отправка неподтверждённых операций.

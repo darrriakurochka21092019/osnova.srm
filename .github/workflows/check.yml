@@ -1,0 +1,40 @@
+name: Build and test
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: osnova
+          POSTGRES_PASSWORD: osnova-ci-only
+          POSTGRES_DB: osnova_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U osnova -d osnova_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      OSNOVA_TEST_DATABASE_URL: postgresql://osnova:osnova-ci-only@127.0.0.1:5432/osnova_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-test-results
+          path: test-results
+          retention-days: 7
