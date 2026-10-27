@@ -30,7 +30,15 @@ export function StudentSelect({
 export function StudentEditor({ student, onClose }: { student?: Student; onClose: () => void }) {
   const { refresh, toast } = useApp();
   const [form, setForm] = useState(
-      student || { name: '', grade: '', goal: '', program: '', status: 'active', color: 'purple' },
+      student || {
+        name: '',
+        grade: '',
+        subject: '',
+        goal: '',
+        program: '',
+        status: 'active',
+        color: 'purple',
+      },
     ),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
@@ -82,6 +90,14 @@ export function StudentEditor({ student, onClose }: { student?: Student; onClose
             </select>
           </Field>
         </div>
+        <Field label="Предмет">
+          <input
+            value={form.subject || ''}
+            onChange={(e) => setForm({ ...form, subject: e.target.value })}
+            placeholder="Например, математика, английский язык"
+            maxLength={100}
+          />
+        </Field>
         <Field label="Цель обучения">
           <textarea
             rows={3}
@@ -120,20 +136,24 @@ export function StudentEditor({ student, onClose }: { student?: Student; onClose
 export function BoardCreate({ onClose, studentId }: { onClose: () => void; studentId?: string }) {
   const { refresh } = useApp(),
     navigate = useNavigate();
-  const [form, setForm] = useState({ title: 'Новая учебная доска', studentId: studentId || '' }),
+  const [sid, setSid] = useState(studentId || ''),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
   return (
-    <Modal title="Новая доска" onClose={onClose}>
+    <Modal title="Подготовить занятие" onClose={onClose}>
+      <p className="muted">
+        Откроется общий холст ученика. Все материалы на нём сохранятся — отдельная доска и новое
+        приглашение не нужны.
+      </p>
       <form
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
           try {
-            const b = await api<Board>('/boards', { ...form, studentId: form.studentId || null });
+            const room = await api('/classrooms', { studentIds: [sid] });
             await refresh();
             onClose();
-            navigate(`/board/${b.id}`);
+            navigate(`/lesson/${room.id}/prepare`);
           } catch (e) {
             setError((e as Error).message);
           } finally {
@@ -141,27 +161,15 @@ export function BoardCreate({ onClose, studentId }: { onClose: () => void; stude
           }
         }}
       >
-        <Field label="Название">
-          <input
-            autoFocus
-            required
-            value={form.title}
-            onChange={(e) => setForm({ ...form, title: e.target.value })}
-          />
-        </Field>
-        <Field label="Ученик" hint="Его кабинет автоматически получит доступ к доске.">
-          <StudentSelect
-            value={form.studentId}
-            onChange={(v) => setForm({ ...form, studentId: v })}
-            optional
-          />
+        <Field label="Ученик">
+          <StudentSelect value={sid} onChange={setSid} />
         </Field>
         <FormError error={error} />
         <div className="form-actions">
           <Button type="button" variant="secondary" onClick={onClose}>
             Отмена
           </Button>
-          <SaveButton busy={busy} label="Создать доску" />
+          <SaveButton busy={busy} label="Открыть доску ученика" />
         </div>
       </form>
     </Modal>
@@ -171,16 +179,19 @@ export function InviteDialog({
   url,
   onClose,
   title = 'Приглашение готово',
+  description,
 }: {
   url: string;
   onClose: () => void;
   title?: string;
+  description?: string;
 }) {
   const [copied, setCopied] = useState(false);
   return (
     <Modal title={title} onClose={onClose}>
       <p className="muted">
-        Передайте ссылку участнику. После входа он получит только назначенный ему доступ.
+        {description ||
+          'Передайте ссылку участнику. После входа он получит только назначенный ему доступ.'}
       </p>
       <textarea
         className="invite-url"
@@ -414,7 +425,10 @@ export function EntryEditor({
             const data = { ...form };
             for (const key of ['start', 'due', 'date'])
               if (key in data) data[key] = data[key] ? fromLocalInput(data[key]) : null;
-            if (kind === 'lesson') data.boardId = data.boardId || null;
+            if (kind === 'lesson') {
+              data.boardId = data.boardId || null;
+              data.subject = data.subject || students.find((s) => s.id === sid)?.subject || '';
+            }
             if (kind === 'notification')
               data.recipientId = students.find((s) => s.id === sid)?.user_id;
             if (entry) await update(entry, data, sid || null);
@@ -434,7 +448,7 @@ export function EntryEditor({
               value={sid}
               onChange={setSid}
               optional={
-                ['task', 'document', 'lesson'].includes(kind) ||
+                ['task', 'document'].includes(kind) ||
                 (kind === 'transaction' && form.type !== 'payment')
               }
             />
@@ -446,25 +460,24 @@ export function EntryEditor({
               {input('start', 'Начало · московское время', 'datetime-local')}
               {input('duration', 'Длительность, минут', 'number')}
               {input('price', 'Стоимость за ученика, ₽', 'number')}
-              {select('status', 'Статус', {
-                planned: 'Запланирован',
-                completed: 'Проведён',
-                rescheduled: 'Перенесён',
-                cancelled: 'Отменён',
-              })}
+              {form.status === 'live' ? (
+                <Field label="Статус">
+                  <p>Идёт занятие. Завершить его можно из комнаты урока.</p>
+                </Field>
+              ) : (
+                select('status', 'Статус', {
+                  planned: 'Запланирован',
+                  completed: 'Проведён',
+                  rescheduled: 'Перенесён',
+                  cancelled: 'Отменён',
+                })
+              )}
             </div>
-            <Field label="Доска">
-              <select value={form.boardId || ''} onChange={(e) => set('boardId', e.target.value)}>
-                <option value="">Создать при открытии урока</option>
-                {boards
-                  .filter((b) => !b.archived)
-                  .map((b) => (
-                    <option value={b.id} key={b.id}>
-                      {b.title}
-                    </option>
-                  ))}
-              </select>
-            </Field>
+            <p className="muted">
+              Урок откроется в постоянной учебной комнате ученика. Доска и доступ подключаются
+              автоматически.
+            </p>
+            {input('subject', 'Предмет', 'text', false)}
             {group()}
             {area('notes', 'Заметки к уроку')}
           </>

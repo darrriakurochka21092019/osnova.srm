@@ -36,6 +36,8 @@ import {
 import { io } from 'socket.io-client';
 import '@fontsource-variable/manrope';
 import './styles.css';
+import './lesson/lesson.css';
+import { Brand, AccessExpired } from './lesson/shared';
 import { api, date } from './api';
 import { AppStore, useApp } from './store';
 import { Avatar, Badge, Busy, Button, Field, FormError, Modal, SaveButton } from './ui';
@@ -63,18 +65,12 @@ import {
 
 (window as any).EXCALIDRAW_ASSET_PATH = '/excalidraw-assets/';
 const BoardRoom = lazy(() => import('./pages/BoardRoom'));
+const LessonRouter = lazy(() => import('./lesson/LessonRoom'));
+const PublicLessonEntry = lazy(() => import('./lesson/LessonEntry'));
+const ClassroomsPage = lazy(() => import('./lesson/ClassroomsPage'));
+const LessonSummary = lazy(() => import('./lesson/LessonSummary'));
 export function Logo() {
-  return (
-    <span className="logo">
-      <span className="logo-mark">
-        <i />
-        <i />
-        <i />
-        <i />
-      </span>
-      основа<span className="logo-dot">.</span>
-    </span>
-  );
+  return <Brand />;
 }
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: boolean }> {
   state = { error: false };
@@ -125,7 +121,7 @@ function Login({ onLogin }: { onLogin: () => Promise<void> }) {
             Пространство, в котором удобно учить.
           </p>
           <div className="art-board">
-            <span className="art-tag">Русский язык</span>
+            <span className="art-tag">Каждый урок — в одном месте</span>
             <p>
               Учиться — значит
               <br />
@@ -230,14 +226,19 @@ function Join({ onLogin }: { onLogin: () => Promise<void> }) {
     return t;
   });
   const [info, setInfo] = useState<any>(null),
+    [invalid, setInvalid] = useState(false),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
     [form, setForm] = useState({ name: '', email: '', password: '' });
   useEffect(() => {
     api('/invites/info', { token: inviteToken })
       .then(setInfo)
-      .catch((e) => setError(e.message));
+      .catch((e) => {
+        setError(e.message);
+        setInvalid([404, 410].includes(e.status));
+      });
   }, []);
+  if (invalid) return <AccessExpired message={error} />;
   return (
     <div className="join-page">
       <div className="auth-card">
@@ -316,7 +317,7 @@ const navigation = [
   ['/', 'Сегодня', LayoutDashboard],
   ['/schedule', 'Расписание', CalendarDays],
   ['/students', 'Ученики', Users],
-  ['/boards', 'Доски', PanelsTopLeft],
+  ['/lessons', 'Уроки', PanelsTopLeft],
   ['/homework', 'Задания', ClipboardList],
   ['/materials', 'Материалы', FolderOpen],
   ['/progress', 'Прогресс', ChartNoAxesCombined],
@@ -330,6 +331,7 @@ const studentPaths = [
   '/',
   '/schedule',
   '/boards',
+  '/lessons',
   '/homework',
   '/materials',
   '/progress',
@@ -374,12 +376,13 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     ([p]) =>
       user.role === 'teacher' ||
       (user.role === 'student' && studentPaths.includes(p)) ||
-      (user.role === 'guest' && p === '/boards'),
+      (user.role === 'guest' && p === '/lessons'),
   );
-  const title =
-    navigation.find(([p]) =>
-      p === '/' ? location.pathname === '/' : location.pathname.startsWith(p),
-    )?.[1] || 'Моё пространство';
+  const title = location.pathname.includes('/summary/')
+    ? 'Итоги урока'
+    : navigation.find(([p]) =>
+        p === '/' ? location.pathname === '/' : location.pathname.startsWith(p),
+      )?.[1] || 'Моё пространство';
   const matches = query.trim()
     ? nav.filter(([, name]) => name.toLowerCase().includes(query.toLowerCase()))
     : [];
@@ -423,7 +426,15 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           {nav.map(([p, name, Icon], i) => (
             <React.Fragment key={p}>
               {i === 8 && <div className="nav-divider" />}
-              <NavLink to={p} end={p === '/'}>
+              <NavLink
+                to={p}
+                end={p === '/'}
+                className={({ isActive }) =>
+                  isActive || (p === '/lessons' && location.pathname.startsWith('/lesson/'))
+                    ? 'active'
+                    : ''
+                }
+              >
                 <Icon size={19} />
                 <span>{name}</span>
                 {p === '/notifications' && unread > 0 && (
@@ -533,10 +544,26 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           <Routes>
             <Route
               path="/"
-              element={user.role === 'guest' ? <Navigate to="/boards" /> : <Dashboard />}
+              element={user.role === 'guest' ? <Navigate to="/lessons" /> : <Dashboard />}
             />
             <Route path="/schedule" element={<SchedulePage />} />
             <Route path="/boards" element={<BoardsPage />} />
+            <Route
+              path="/lessons"
+              element={
+                <Suspense fallback={<Busy />}>
+                  <ClassroomsPage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/lesson/:id/summary/:sessionId"
+              element={
+                <Suspense fallback={<Busy />}>
+                  <LessonSummary />
+                </Suspense>
+              }
+            />
             <Route path="/homework" element={<HomeworkPage />} />
             <Route path="/homework/:id" element={<HomeworkDetail />} />
             <Route path="/materials" element={<MaterialsPage />} />
@@ -564,7 +591,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
       </div>
       <nav className="bottom-nav">
         {nav
-          .filter(([p]) => ['/', '/schedule', '/boards', '/homework'].includes(p))
+          .filter(([p]) => ['/', '/schedule', '/lessons', '/homework'].includes(p))
           .map(([p, n, I]) => (
             <NavLink end={p === '/'} key={p} to={p}>
               <I size={21} />
@@ -599,13 +626,13 @@ function Tour({ onClose }: { onClose: () => void }) {
           ],
           [
             'Планируйте занятия',
-            'Добавьте урок, выберите ученика или мини-группу и свяжите занятие с доской.',
+            'Добавьте урок и выберите ученика или мини-группу. Постоянная комната и общая доска привяжутся автоматически.',
             '/schedule',
           ],
           [
             'Общая доска для урока',
-            'Создайте доску, загрузите PDF и пригласите ученика. Страницы и аннотации сохраняются автоматически.',
-            '/boards',
+            'У каждого ученика автоматически появляется учебная комната. Подготовьте материалы и отправьте одну постоянную ссылку на все занятия.',
+            '/lessons',
           ],
           [
             'Продолжайте после урока',
@@ -621,7 +648,7 @@ function Tour({ onClose }: { onClose: () => void }) {
           ],
           [
             'Ваши уроки',
-            'Откройте расписание и перейдите на доску из карточки занятия.',
+            'Откройте занятие в расписании и войдите на урок. Вы попадёте на общую доску, когда преподаватель начнёт занятие.',
             '/schedule',
           ],
           [
@@ -696,11 +723,30 @@ function App() {
     return () => window.removeEventListener('session-expired', expire);
   }, []);
   if (loading) return <Busy />;
+  if (location.pathname.startsWith('/learn/'))
+    return (
+      <Routes>
+        <Route
+          path="/learn/:id"
+          element={
+            <Suspense fallback={<Busy />}>
+              <PublicLessonEntry user={user} onLogin={loadUser} />
+            </Suspense>
+          }
+        />
+      </Routes>
+    );
   if (location.pathname === '/join') return <Join onLogin={loadUser} />;
   if (!user) return <Login onLogin={loadUser} />;
   return (
     <AppStore user={user} setUser={setUser}>
-      <Shell onLogout={() => setUser(null)} />
+      {location.pathname.startsWith('/lesson/') && !location.pathname.includes('/summary/') ? (
+        <Suspense fallback={<Busy />}>
+          <LessonRouter />
+        </Suspense>
+      ) : (
+        <Shell onLogout={() => setUser(null)} />
+      )}
     </AppStore>
   );
 }

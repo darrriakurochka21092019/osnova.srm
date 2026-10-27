@@ -16,6 +16,7 @@ import { authRoutes } from './modules/auth';
 import { boardRoutes } from './modules/boards';
 import { recordRoutes, tickNotifications } from './modules/records';
 import { fileRoutes } from './modules/files';
+import { classroomRoutes } from './modules/classrooms';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -218,6 +219,7 @@ export async function createApp(options: Partial<Config> = {}, database?: Databa
   await boardRoutes(ctx);
   await fileRoutes(ctx);
   await recordRoutes(ctx);
+  await classroomRoutes(ctx);
   const webPath = path.resolve('dist/web');
   if (existsSync(webPath)) {
     await app.register(staticPlugin, { root: webPath, wildcard: false });

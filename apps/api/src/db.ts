@@ -105,6 +105,39 @@ export async function migrate(db: Database) {
     CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
     ALTER TABLE boards ADD COLUMN IF NOT EXISTS canvas_page_id UUID;
     ALTER TABLE boards ADD COLUMN IF NOT EXISTS background TEXT NOT NULL DEFAULT 'white';
+    ALTER TABLE students ADD COLUMN IF NOT EXISTS subject TEXT NOT NULL DEFAULT '';
+    CREATE TABLE IF NOT EXISTS classrooms (
+      id UUID PRIMARY KEY, owner_id UUID NOT NULL REFERENCES users(id), board_id UUID UNIQUE NOT NULL REFERENCES boards(id),
+      member_key TEXT NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('individual','group')),
+      invite_id UUID NOT NULL REFERENCES invites(id), link_token TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE(owner_id,member_key)
+    );
+    CREATE TABLE IF NOT EXISTS classroom_members (
+      classroom_id UUID NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE, student_id UUID NOT NULL REFERENCES students(id),
+      permission TEXT NOT NULL DEFAULT 'edit' CHECK(permission IN ('view','edit')), PRIMARY KEY(classroom_id,student_id)
+    );
+    CREATE TABLE IF NOT EXISTS classroom_guests (
+      user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      source_room_id UUID NOT NULL REFERENCES classrooms(id), student_id UUID REFERENCES students(id)
+    );
+    CREATE TABLE IF NOT EXISTS lesson_sessions (
+      id UUID PRIMARY KEY, classroom_id UUID NOT NULL REFERENCES classrooms(id), lesson_id UUID NOT NULL REFERENCES records(id),
+      started_at TIMESTAMPTZ NOT NULL DEFAULT now(), ended_at TIMESTAMPTZ,
+      summary TEXT NOT NULL DEFAULT '', private_note TEXT NOT NULL DEFAULT '', homework_ids JSONB NOT NULL DEFAULT '[]'
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS classroom_live_session ON lesson_sessions(classroom_id) WHERE ended_at IS NULL;
+    CREATE TABLE IF NOT EXISTS lesson_attendance (
+      session_id UUID NOT NULL REFERENCES lesson_sessions(id), user_id UUID NOT NULL REFERENCES users(id),
+      name TEXT NOT NULL, joined_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(session_id,user_id)
+    );
+    CREATE TABLE IF NOT EXISTS lesson_messages (
+      id UUID PRIMARY KEY, classroom_id UUID NOT NULL REFERENCES classrooms(id), author_id UUID NOT NULL REFERENCES users(id),
+      author_name TEXT NOT NULL, body TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS lesson_messages_room ON lesson_messages(classroom_id,created_at);
+    ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS lesson_session_id UUID REFERENCES lesson_sessions(id);
+    ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS label TEXT;
+    ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS background TEXT;
     CREATE UNIQUE INDEX IF NOT EXISTS notification_dedupe ON records(owner_id,(data->>'dedupeKey')) WHERE kind='notification' AND data->>'dedupeKey' IS NOT NULL;
   `;
   // Each statement is executable both by PostgreSQL and the local PGlite adapter.

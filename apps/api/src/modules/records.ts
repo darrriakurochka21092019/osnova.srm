@@ -11,6 +11,7 @@ import {
 import type { Context } from '../app';
 import type { Queryable } from '../db';
 import { requireThat, studentAccess, hashToken, token, boardAccess } from '../security';
+import { ensureClassroom, attachLessonRoom } from '../rooms';
 
 export async function canReadRecord(db: Queryable, user: User, record: Entry) {
   if (record.kind === 'notification') return record.data.recipientId === user.id;
@@ -79,7 +80,7 @@ export async function recordRoutes(ctx: Context) {
     if (req.user.role === 'guest') return [];
     return (
       await db.query(
-        'SELECT * FROM students WHERE owner_id=$1 AND ($2::boolean OR user_id=$3) ORDER BY created_at',
+        `SELECT s.*,c.id AS classroom_id FROM students s LEFT JOIN classrooms c ON c.owner_id=s.owner_id AND c.member_key=s.id::text WHERE s.owner_id=$1 AND ($2::boolean OR s.user_id=$3) ORDER BY s.created_at`,
         [
           req.user.role === 'teacher' ? req.user.id : req.user.owner_id,
           req.user.role === 'teacher',
@@ -99,9 +100,9 @@ export async function recordRoutes(ctx: Context) {
         req.user.id,
         input.name,
       ]);
-      return (
+      const student = (
         await tx.query(
-          'INSERT INTO students(id,owner_id,user_id,name,grade,goal,program,status,color) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+          'INSERT INTO students(id,owner_id,user_id,name,grade,goal,program,status,color,subject) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',
           [
             id,
             req.user.id,
@@ -112,9 +113,12 @@ export async function recordRoutes(ctx: Context) {
             input.program,
             input.status,
             input.color,
+            input.subject,
           ],
         )
       ).rows[0];
+      const room = await ensureClassroom(tx, req.user.id, [student.id]);
+      return { ...student, classroom_id: room.id };
     });
   });
   app.patch('/api/v1/students/:id', async (req) => {
@@ -133,12 +137,30 @@ export async function recordRoutes(ctx: Context) {
       ]);
       return (
         await tx.query(
-          'UPDATE students SET name=$2,grade=$3,goal=$4,program=$5,status=$6,color=$7 WHERE id=$1 RETURNING *',
-          [id, input.name, input.grade, input.goal, input.program, input.status, input.color],
+          'UPDATE students SET name=$2,grade=$3,goal=$4,program=$5,status=$6,color=$7,subject=$8 WHERE id=$1 RETURNING *',
+          [
+            id,
+            input.name,
+            input.grade,
+            input.goal,
+            input.program,
+            input.status,
+            input.color,
+            input.subject,
+          ],
         )
       ).rows[0];
     });
-    if (input.status === 'paused') io.in(`user:${current.user_id}`).disconnectSockets();
+    if (input.status === 'paused') {
+      io.in(`user:${current.user_id}`).disconnectSockets();
+      const guests = (
+        await db.query('SELECT user_id FROM classroom_guests WHERE student_id=$1', [id])
+      ).rows;
+      for (const guest of guests) {
+        await db.query('UPDATE users SET active=false WHERE id=$1', [guest.user_id]);
+        io.in(`user:${guest.user_id}`).disconnectSockets();
+      }
+    }
     return row;
   });
   app.post('/api/v1/students/:id/invite', async (req) => {
@@ -187,6 +209,8 @@ export async function recordRoutes(ctx: Context) {
       .parse(req.body);
     await studentAccess(db, req.user.id, input.studentId);
     const data = recordSchemas[kind].parse(input.data) as any;
+    if (kind === 'lesson')
+      requireThat(data.status !== 'live', 400, 'Начинайте занятие через вход в учебную комнату');
     if (
       ['homework', 'result', 'report'].includes(kind) ||
       (kind === 'transaction' && data.type === 'payment')
@@ -204,7 +228,13 @@ export async function recordRoutes(ctx: Context) {
     if (kind === 'lesson' && data.boardId) {
       const b = await boardAccess(db, req.user, data.boardId);
       requireThat(b.owner_id === req.user.id);
-      for (const sid of new Set([input.studentId, ...data.studentIds].filter(Boolean))) {
+      const ids = [
+        ...new Set<string>([input.studentId, ...data.studentIds].filter(Boolean)),
+      ].sort();
+      const assigned = (
+        await db.query('SELECT member_key FROM classrooms WHERE board_id=$1', [data.boardId])
+      ).rows[0];
+      for (const sid of !assigned || assigned.member_key === ids.join(',') ? ids : []) {
         await db.query(
           "INSERT INTO board_members(board_id,user_id,permission) SELECT $1,user_id,'edit' FROM students WHERE id=$2 ON CONFLICT DO NOTHING",
           [data.boardId, sid],
@@ -220,12 +250,14 @@ export async function recordRoutes(ctx: Context) {
       ).rows[0];
       requireThat(u, 403, 'Получатель недоступен');
     }
-    const record = (
+    let record = (
       await db.query(
         'INSERT INTO records(id,kind,owner_id,student_id,data) VALUES($1,$2,$3,$4,$5) RETURNING *',
         [randomUUID(), kind, req.user.id, input.studentId || null, JSON.stringify(data)],
       )
     ).rows[0];
+    if (kind === 'lesson' && [record.student_id, ...data.studentIds].some(Boolean))
+      record = await db.transaction((tx) => attachLessonRoom(tx, record));
     const uid = await recipient(db, input.studentId);
     if (kind === 'notification') io.to(`user:${data.recipientId}`).emit('notification', record);
     if (kind === 'homework' && uid)
@@ -248,7 +280,9 @@ export async function recordRoutes(ctx: Context) {
             uid,
             'Запланирован урок',
             data.title,
-            '/schedule',
+            record.data.classroomId
+              ? `/lesson/${record.data.classroomId}?lesson=${record.id}`
+              : '/schedule',
             `new-lesson:${record.id}:${uid}`,
           );
       }
@@ -289,6 +323,45 @@ export async function recordRoutes(ctx: Context) {
         data: z.record(z.string(), z.unknown()),
       })
       .parse(req.body);
+    if (kind === 'lesson' && req.user.role === 'teacher') {
+      const session = (
+        await db.query(
+          'SELECT id,ended_at FROM lesson_sessions WHERE lesson_id=$1 ORDER BY started_at DESC LIMIT 1',
+          [id],
+        )
+      ).rows[0];
+      const live = session && !session.ended_at;
+      const unchangedStudent =
+        input.studentId === undefined || input.studentId === record.student_id;
+      const unchangedGroup =
+        input.data.studentIds === undefined ||
+        JSON.stringify(
+          [...new Set(z.array(z.uuid()).max(20).parse(input.data.studentIds))].sort(),
+        ) === JSON.stringify([...new Set(record.data.studentIds || [])].sort());
+      if (session?.ended_at)
+        requireThat(
+          unchangedStudent &&
+            unchangedGroup &&
+            (input.data.status === undefined ||
+              ['completed', 'cancelled'].includes(input.data.status as string)),
+          409,
+          'У завершённого занятия нельзя менять участников или начинать его повторно. Создайте следующее занятие',
+        );
+      if (live)
+        requireThat(
+          unchangedStudent &&
+            unchangedGroup &&
+            (input.data.status === undefined || input.data.status === 'live'),
+          409,
+          'Завершите занятие из комнаты урока перед изменением его статуса или участников',
+        );
+      if (input.data.status === 'live')
+        requireThat(
+          live && record.data.status === 'live',
+          409,
+          'Начинайте занятие через вход в учебную комнату',
+        );
+    }
     let patch = input.data;
     if (req.user.role !== 'teacher') {
       requireThat(input.studentId === undefined, 403);
@@ -340,28 +413,42 @@ export async function recordRoutes(ctx: Context) {
     if (kind === 'lesson' && data.boardId && req.user.role === 'teacher') {
       const b = await boardAccess(db, req.user, data.boardId);
       requireThat(b.owner_id === req.user.id);
-      for (const sid of new Set(
-        [
-          input.studentId === undefined ? record.student_id : input.studentId,
-          ...data.studentIds,
-        ].filter(Boolean),
-      )) {
+      const ids = [
+        ...new Set<string>(
+          [
+            input.studentId === undefined ? record.student_id : input.studentId,
+            ...data.studentIds,
+          ].filter(Boolean),
+        ),
+      ].sort();
+      const assigned = (
+        await db.query('SELECT member_key FROM classrooms WHERE board_id=$1', [data.boardId])
+      ).rows[0];
+      for (const sid of !assigned || assigned.member_key === ids.join(',') ? ids : []) {
         await db.query(
           "INSERT INTO board_members(board_id,user_id,permission) SELECT $1,user_id,'edit' FROM students WHERE id=$2 AND owner_id=$3 ON CONFLICT DO NOTHING",
           [data.boardId, sid, req.user.id],
         );
       }
     }
-    const updated = (
+    let updated = (
       await db.query(
-        'UPDATE records SET data=$2,student_id=$3,updated_at=now() WHERE id=$1 RETURNING *',
+        `UPDATE records SET data=$2,student_id=$3,updated_at=now() WHERE id=$1 AND ($4::text IS NULL OR data->>'status'=$4) RETURNING *`,
         [
           id,
           JSON.stringify(data),
           input.studentId === undefined ? record.student_id : input.studentId,
+          kind === 'lesson' ? record.data.status : null,
         ],
       )
     ).rows[0];
+    requireThat(updated, 409, 'Состояние занятия изменилось. Обновите карточку');
+    if (
+      kind === 'lesson' &&
+      req.user.role === 'teacher' &&
+      [updated.student_id, ...data.studentIds].some(Boolean)
+    )
+      updated = await db.transaction((tx) => attachLessonRoom(tx, updated));
     const uid = await recipient(db, updated.student_id);
     if (kind === 'homework' && data.status === 'submitted' && record.data.status !== 'submitted')
       await notify(
@@ -404,7 +491,9 @@ export async function recordRoutes(ctx: Context) {
               target,
               data.status === 'cancelled' ? 'Урок отменён' : 'Расписание изменилось',
               data.title,
-              '/schedule',
+              data.status !== 'cancelled' && updated.data.classroomId
+                ? `/lesson/${updated.data.classroomId}?lesson=${id}`
+                : '/schedule',
               `changed:${id}:${updated.updated_at}:${target}`,
             );
         }
@@ -415,11 +504,23 @@ export async function recordRoutes(ctx: Context) {
     requireThat(req.user.role === 'teacher');
     const id = z.uuid().parse((req.params as any).id),
       kind = z.enum(kinds as [RecordKind, ...RecordKind[]]).parse((req.params as any).kind);
-    const r = await db.query(
-      'DELETE FROM records WHERE id=$1 AND kind=$2 AND owner_id=$3 RETURNING id',
-      [id, kind, req.user.id],
-    );
-    requireThat(r.rows[0], 404, 'Запись не найдена');
+    await db.transaction(async (tx) => {
+      const record = (
+        await tx.query(
+          'SELECT id FROM records WHERE id=$1 AND kind=$2 AND owner_id=$3 FOR UPDATE',
+          [id, kind, req.user.id],
+        )
+      ).rows[0];
+      requireThat(record, 404, 'Запись не найдена');
+      if (kind === 'lesson')
+        requireThat(
+          !(await tx.query('SELECT id FROM lesson_sessions WHERE lesson_id=$1 LIMIT 1', [id])).rows
+            .length,
+          409,
+          'У занятия есть сохранённая история. Его можно отметить отменённым после завершения, но нельзя удалить вместе с материалами',
+        );
+      await tx.query('DELETE FROM records WHERE id=$1', [id]);
+    });
     return { ok: true };
   });
   app.get('/api/v1/audit', async (req) => {
@@ -474,7 +575,7 @@ export async function tickNotifications(ctx: Context) {
               uid,
               'Скоро урок',
               d.title,
-              '/schedule',
+              d.classroomId ? `/lesson/${d.classroomId}?lesson=${record.id}` : '/schedule',
               `reminder:${record.id}:${d.start}:${uid}`,
             );
         }

@@ -7,6 +7,7 @@ import {
   type Board,
   type Entry,
   type RecordKind,
+  type Classroom,
 } from '../../../packages/contracts';
 
 export const emptyRecords = Object.fromEntries(kinds.map((k) => [k, [] as Entry[]])) as Record<
@@ -18,6 +19,7 @@ type Store = {
   setUser: (u: User) => void;
   students: Student[];
   boards: Board[];
+  classrooms: Classroom[];
   records: Record<RecordKind, Entry[]>;
   refresh: () => Promise<void>;
   toast: (message: string) => void;
@@ -47,6 +49,7 @@ export function AppStore({
 }) {
   const [students, setStudents] = useState<Student[]>([]),
     [boards, setBoards] = useState<Board[]>([]),
+    [classrooms, setClassrooms] = useState<Classroom[]>([]),
     [records, setRecords] = useState(emptyRecords),
     [message, setMessage] = useState('');
   const toast = useCallback((text: string) => {
@@ -54,13 +57,15 @@ export function AppStore({
     window.setTimeout(() => setMessage(''), 5000);
   }, []);
   const refresh = useCallback(async () => {
-    const [students, boards, ...lists] = await Promise.all([
+    const [students, boards, classrooms, ...lists] = await Promise.all([
       api<Student[]>('/students'),
       api<Board[]>('/boards'),
+      api<Classroom[]>('/classrooms'),
       ...kinds.map((k) => api<Entry[]>(`/records/${k}`)),
     ]);
     setStudents(students as Student[]);
     setBoards(boards as Board[]);
+    setClassrooms(classrooms as Classroom[]);
     setRecords(
       Object.fromEntries(kinds.map((k, i) => [k, lists[i]])) as Record<RecordKind, Entry[]>,
     );
@@ -97,6 +102,7 @@ export function AppStore({
         setUser,
         students,
         boards,
+        classrooms,
         records,
         refresh,
         toast,

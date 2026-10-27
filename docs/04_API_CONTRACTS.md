@@ -26,7 +26,7 @@
 | PATCH, DELETE /pages/:id           | Название, порядок / удаление с сохранением хотя бы одной страницы |
 | GET /pages/:id/snapshot            | Сцена и ревизия                                                   |
 | POST /pages/:id/operations         | Идемпотентное элементное изменение                                |
-| GET /pages/:id/history             | Последние 50 снимков                                              |
+| GET /pages/:id/history             | До 150 последних снимков с метками урока                          |
 | POST /pages/:id/restore            | snapshotId, expectedRevision; восстановление учителем             |
 | GET, POST /boards/:id/invites      | Список без токенов / выдача ссылки                                |
 | GET /boards/:id/members            | Имена и права участников для владельца                            |
@@ -46,3 +46,29 @@
 Операция: `{operationId: UUID, changes: [{baseVersion: number|null, element: ExcalidrawElement}]}`. Ответ: `{operationId,pageId,revision,elements,conflicts,duplicate?}`. Подтверждение означает завершённую транзакцию. `isDeleted` хранится как tombstone. Отсутствующий элемент не означает удаления. iframe/embeddable не разрешены.
 
 Socket.IO использует ту же cookie. `join-page {pageId}` → ack `{ok,peers}`; сервер проверяет доступ. Серверные события: `scene-update`, `pages-updated`, `presence`, `cursor`, `notification`, `access-revoked`. Полезная нагрузка курсора ограничивается; сцена передаётся через транзакционное HTTP API. После reconnect повторяется получение snapshot и отправка неподтверждённых операций.
+
+## Постоянные комнаты и уроки
+
+| Метод и путь                                      | Сценарий                                                                                                                     |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| GET /classrooms                                   | Доступные комнаты, автоматическое создание комнат прежних учеников                                                           |
+| POST /classrooms                                  | `{studentIds: UUID[]}` — найти/создать постоянную комнату для этого состава                                                  |
+| POST /lessons/:id/classroom                       | Привязать запись расписания к комнате, вернуть данные входа                                                                  |
+| GET /classrooms/:id                               | Комната, состав, права, активное и ближайшее занятия, последние 30 сессий, присутствие; `?lessonId=` выбирает занятие        |
+| POST /classrooms/preview                          | Публичный вход по `{roomId, token}`; личная ссылка определяет активную/следующую мини-группу                                 |
+| POST /classrooms/redeem                           | `{roomId, token, name}` → ограниченная гостевая cookie и фактический roomId                                                  |
+| POST /classrooms/:id/join                         | `{name, lessonId?}`; ученик получает `{waiting:true}` или активную сессию, преподаватель начинает занятие                    |
+| GET /classrooms/:id/sessions/:sessionId           | Сессия, посещение и запись расписания; private_note видна только владельцу                                                   |
+| POST /classrooms/:id/sessions/:sessionId/end      | Идемпотентное завершение владельцем, контрольный снимок, статус completed                                                    |
+| GET /classrooms/:id/sessions/:sessionId/materials | Неизменяемая сцена, фон и исходные файлы завершённого урока                                                                  |
+| PATCH /classrooms/:id/sessions/:sessionId/summary | Владелец: `{summary, privateNote, homework?:{title, description, due}}`; задания по одному на участника, повтор не дублирует |
+| GET, POST /classrooms/:id/messages                | Последние 150 комментариев / `{id: UUID, body, name?}` с проверкой повтора                                                   |
+| POST /classrooms/:id/link                         | Владелец индивидуальной комнаты: `{rotate:true}` или `{revoke:true}`                                                         |
+| PATCH /classrooms/:id/members/:studentId          | Владелец: `{permission:"edit"                                                                                                | "view"}`; применяется и к личным гостевым сессиям |
+| GET /pages/:id/history/:snapshotId                | Только владелец: сцена для предварительного просмотра перед восстановлением                                                  |
+
+Ответ Classroom содержит `link` только владельцу индивидуальной комнаты; для группы владелец получает `memberLinks` — прежние личные ссылки учеников. Публичный preview содержит entryStudentId для правильного имени на входе. Ни ссылка, ни её секрет не возвращаются другим участникам. Просмотр и повторное копирование доступны владельцу, поэтому секрет личной ссылки хранится в БД, а его SHA-256 — в invites для проверки; куки-сессии по-прежнему хранят только хеши. Гостевые сессии по личной ссылке ограничены 12 часами, ссылка остаётся постоянной до отзыва. Общая анонимная ссылка группы не выдаётся.
+
+Создание ученика автоматически возвращает classroom_id и создаёт его комнату/канонический холст в той же транзакции. Предмет хранится в student.subject и lesson.data.subject. Создание/изменение записи урока с участниками привязывает постоянную комнату. Статус live устанавливается только через join; во время занятия менять участников/статус вручную нельзя. После завершения нельзя сменить участников или вернуть planned; цену, описание и факт отмены после завершения можно уточнить. Запись с session нельзя удалить вместе с сохранённой историей — сервер отвечает 409.
+
+Socket.IO: `join-classroom {roomId, stage:"lobby"|"lesson", name}` с проверкой доступа; `classroom-hand {raised:boolean}`. Серверные события: `classroom-state {participants,activeSession}`, `classroom-ended {sessionId}`, `classroom-message`, `classroom-permission`, `classroom-summary {sessionId}`. При reconnect клиент повторно входит и получает актуальное состояние. Все события урока отделены от элементных операций доски.

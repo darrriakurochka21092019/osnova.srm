@@ -14,6 +14,8 @@ export type Student = {
   user_id: string;
   name: string;
   grade: string;
+  subject?: string;
+  classroom_id?: string;
   goal: string;
   program: string;
   status: 'active' | 'paused';
@@ -33,6 +35,53 @@ export type Board = {
   background?: BoardBackground;
 };
 export type BoardBackground = 'white' | 'grid' | 'ruled' | 'dots';
+export type Classroom = {
+  id: string;
+  owner_id: string;
+  board_id: string;
+  title: string;
+  kind: 'individual' | 'group';
+  permission: 'admin' | 'edit' | 'view';
+  students: (Pick<Student, 'id' | 'name' | 'grade' | 'color' | 'status' | 'subject'> & {
+    user_id: string;
+    permission: 'edit' | 'view';
+  })[];
+  lesson: Entry | null;
+  activeSession: LessonSession | null;
+  sessions: LessonSession[];
+  participants: LessonParticipant[];
+  entryStudentId?: string;
+  link?: string;
+  linkActive?: boolean;
+  memberLinks?: { roomId: string; studentId: string; name: string; url: string; active: boolean }[];
+};
+export type LessonSession = {
+  id: string;
+  classroom_id: string;
+  lesson_id: string;
+  started_at: string;
+  ended_at: string | null;
+  summary: string;
+  private_note?: string;
+  homework_ids: string[];
+  title?: string;
+};
+export type LessonParticipant = {
+  id: string;
+  studentId?: string;
+  name: string;
+  role: Role;
+  stage: 'lobby' | 'lesson';
+  handRaised: boolean;
+};
+export type LessonMessage = {
+  id: string;
+  classroom_id: string;
+  author_id: string;
+  author_name: string;
+  body: string;
+  created_at: string;
+};
 export type PresentationSlide = { fileId: string; width: number; height: number };
 export type PresentationData = {
   sourceId: string;
@@ -95,6 +144,7 @@ const iso = z.iso.datetime({ offset: true });
 export const studentSchema = z.object({
   name: title,
   grade: z.string().max(50).default(''),
+  subject: z.string().trim().max(100).default(''),
   goal: text.default(''),
   program: text.default(''),
   status: z.enum(['active', 'paused']).default('active'),
@@ -106,8 +156,11 @@ export const recordSchemas = {
     start: iso,
     duration: z.number().int().min(15).max(240),
     price: z.number().min(0).max(100000),
-    status: z.enum(['planned', 'completed', 'cancelled', 'rescheduled']),
+    status: z.enum(['planned', 'live', 'completed', 'cancelled', 'rescheduled']),
     boardId: uuid.nullable().optional(),
+    classroomId: uuid.nullable().optional(),
+    materialBoardId: uuid.nullable().optional(),
+    subject: z.string().trim().max(100).default(''),
     studentIds: z.array(uuid).max(20).default([]),
     notes: text.default(''),
     rescheduleRequest: text.optional(),

@@ -22,6 +22,7 @@ import {
   Target,
   FolderOpen,
   X,
+  Copy,
 } from 'lucide-react';
 import { api, date, localInput, fromLocalInput, money, statusLabels, todayKey } from '../api';
 import { useApp } from '../store';
@@ -38,21 +39,34 @@ import {
   SearchBox,
 } from '../ui';
 import { BoardCreate, EntryEditor, InviteDialog, StudentEditor, StudentSelect } from './editors';
-import type { Board, Entry } from '../../../../packages/contracts';
+import type { Board, Classroom, Entry } from '../../../../packages/contracts';
 
 export function Dashboard() {
-  const { user, records, students, boards } = useApp(),
+  const { user, records, students, boards, classrooms, toast } = useApp(),
     [createBoard, setCreateBoard] = useState(false),
     [lesson, setLesson] = useState<Entry | null>(null);
+  const navigate = useNavigate();
+  const enterLesson = async (entry: Entry) => {
+    try {
+      const room = await api(`/lessons/${entry.id}/classroom`, {});
+      navigate(`/lesson/${room.id}?lesson=${entry.id}`);
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  };
   const teacher = user.role === 'teacher',
     now = Date.now();
   const upcoming = records.lesson
     .filter(
       (r) =>
-        ['planned', 'rescheduled'].includes(r.data.status) &&
-        new Date(r.data.start).getTime() >= now - 3600000,
+        ['planned', 'rescheduled', 'live'].includes(r.data.status) &&
+        (r.data.status === 'live' || new Date(r.data.start).getTime() >= now - 4 * 3600000),
     )
-    .sort((a, b) => a.data.start.localeCompare(b.data.start));
+    .sort(
+      (a, b) =>
+        Number(b.data.status === 'live') - Number(a.data.status === 'live') ||
+        a.data.start.localeCompare(b.data.start),
+    );
   const today = upcoming.filter((r) => localInput(r.data.start).startsWith(todayKey()));
   const pending = records.homework.filter((r) =>
     teacher ? r.data.status === 'submitted' : ['assigned', 'draft'].includes(r.data.status),
@@ -72,7 +86,7 @@ export function Dashboard() {
           teacher ? (
             <Button onClick={() => setCreateBoard(true)}>
               <Plus size={18} />
-              Создать доску
+              Запланировать урок
             </Button>
           ) : (
             <Link className="btn btn-primary" to="/homework">
@@ -85,12 +99,8 @@ export function Dashboard() {
       <div className="stats-grid">
         <Stat label="Занятий сегодня" value={today.length} icon={CalendarDays} tone="purple" />
         <Stat
-          label={teacher ? 'Активных учеников' : 'Мои доски'}
-          value={
-            teacher
-              ? students.filter((s) => s.status === 'active').length
-              : boards.filter((b) => !b.archived).length
-          }
+          label={teacher ? 'Активных учеников' : 'Учебных комнат'}
+          value={teacher ? students.filter((s) => s.status === 'active').length : classrooms.length}
           icon={Users}
           tone="mint"
         />
@@ -127,18 +137,22 @@ export function Dashboard() {
                   : 'Пишите, объясняйте и исследуйте вместе на одной доске.'}
               </p>
               {next ? (
-                <Button onClick={() => setLesson(next)}>
-                  Открыть урок
+                <Button onClick={() => void enterLesson(next)}>
+                  {next.data.status === 'live'
+                    ? 'Продолжить урок'
+                    : teacher
+                      ? 'Начать урок'
+                      : 'Войти на урок'}
                   <ArrowRight size={18} />
                 </Button>
               ) : teacher ? (
-                <Button onClick={() => setCreateBoard(true)}>
-                  Создать первую доску
-                  <Plus size={17} />
-                </Button>
+                <Link className="btn btn-primary" to={students.length ? '/lessons' : '/students'}>
+                  {students.length ? 'Подготовить урок' : 'Добавить ученика'}
+                  <ArrowRight size={17} />
+                </Link>
               ) : (
-                <Link to="/boards" className="btn btn-primary">
-                  Мои доски
+                <Link to="/lessons" className="btn btn-primary">
+                  Моя учебная комната
                   <ArrowRight size={17} />
                 </Link>
               )}
@@ -182,24 +196,26 @@ export function Dashboard() {
             </div>
           </section>
           <section>
-            <SectionHeading title="Продолжить с доской" to="/boards" />
+            <SectionHeading title="Учебные комнаты" to="/lessons" />
             <div className="board-grid compact">
               {boards
-                .filter((b) => !b.archived)
+                .filter((b) => !b.archived && classrooms.some((c) => c.board_id === b.id))
                 .slice(0, 3)
                 .map((b, i) => (
                   <BoardCard key={b.id} board={b} index={i} />
                 ))}
-              {!boards.length && (
-                <button className="new-board-card" onClick={() => teacher && setCreateBoard(true)}>
+              {!classrooms.length && (
+                <Link className="new-board-card" to={teacher ? '/students' : '/lessons'}>
                   <Plus size={25} />
-                  <strong>{teacher ? 'Ваша первая доска' : 'Ваши доски появятся здесь'}</strong>
+                  <strong>
+                    {teacher ? 'Добавьте первого ученика' : 'Ваша комната появится здесь'}
+                  </strong>
                   <small>
                     {teacher
-                      ? 'Создадим пространство для урока'
-                      : 'Когда преподаватель предоставит доступ'}
+                      ? 'Комната с доской создастся автоматически'
+                      : 'Откройте ссылку преподавателя'}
                   </small>
-                </button>
+                </Link>
               )}
             </div>
           </section>
@@ -285,7 +301,7 @@ export function Dashboard() {
           </div>
         </aside>
       </div>
-      {createBoard && <BoardCreate onClose={() => setCreateBoard(false)} />}{' '}
+      {createBoard && <EntryEditor kind="lesson" onClose={() => setCreateBoard(false)} />}{' '}
       {lesson && <LessonDialog entry={lesson} onClose={() => setLesson(null)} />}
     </>
   );
@@ -349,14 +365,20 @@ export function BoardCard({
   index?: number;
   actions?: React.ReactNode;
 }) {
-  const { studentName } = useApp();
+  const { studentName, classrooms, user } = useApp();
+  const room = classrooms.find((c) => c.board_id === board.id),
+    target = room ? `/lesson/${room.id}` : `/board/${board.id}`;
   return (
     <div className="board-card">
-      <Link to={`/board/${board.id}`} className={`board-preview preview-${index % 4}`}>
+      <Link to={target} className={`board-preview preview-${index % 4}`}>
         <div className="preview-label">
-          {board.student_id ? 'Индивидуальный урок' : 'Учебная доска'}
+          {room
+            ? room.kind === 'group'
+              ? 'Мини-группа'
+              : 'Индивидуальные занятия'
+            : 'Учебный материал'}
         </div>
-        <div className="preview-text">{board.title.slice(0, 55)}</div>
+        <div className="preview-text">{(room?.title || board.title).slice(0, 55)}</div>
         <div className="preview-lines">
           <i />
           <i />
@@ -365,11 +387,11 @@ export function BoardCard({
         <span className="preview-arrow">↗</span>
       </Link>
       <div className="board-info">
-        <Link to={`/board/${board.id}`}>
-          <h3>{board.title}</h3>
+        <Link to={target}>
+          <h3>{room?.title || board.title}</h3>
           <p>{board.student_id ? studentName(board.student_id) : 'Моё пространство'}</p>
           <small className="muted">
-            {date(board.updated_at)} · Общий холст
+            {room ? 'Постоянная комната · одна ссылка' : `${date(board.updated_at)} · Общий холст`}
           </small>
         </Link>
         {actions}
@@ -378,7 +400,8 @@ export function BoardCard({
   );
 }
 export function BoardsPage() {
-  const { user, boards, students, refresh, toast } = useApp();
+  const { user, boards: allBoards, classrooms, students, refresh, toast } = useApp();
+  const boards = allBoards.filter((b) => !classrooms.some((c) => c.board_id === b.id));
   const [create, setCreate] = useState(false),
     [query, setQuery] = useState(''),
     [tab, setTab] = useState('active'),
@@ -394,13 +417,13 @@ export function BoardsPage() {
     <>
       <PageHead
         eyebrow="ПРОСТРАНСТВО ДЛЯ ОБЪЯСНЕНИЙ"
-        title="Учебные доски"
-        description="Идеи, тексты и открытия. Можно продолжить с того места, где остановились."
+        title="Материалы и прежние доски"
+        description="Сохранённые материалы остаются доступны. Для подготовки нового занятия откройте учебную комнату ученика."
         action={
           user.role === 'teacher' && (
             <Button onClick={() => setCreate(true)}>
               <Plus size={18} />
-              Новая доска
+              Подготовить занятие
             </Button>
           )
         }
@@ -579,12 +602,13 @@ export function StudentsPage() {
 }
 export function StudentDetail() {
   const { id } = useParams(),
-    { students, records, boards, toast } = useApp();
+    { students, records, boards, classrooms, toast } = useApp();
+  const navigate = useNavigate();
   const s = students.find((x) => x.id === id);
   const [tab, setTab] = useState('overview'),
     [edit, setEdit] = useState(false),
-    [board, setBoard] = useState(false),
     [invite, setInvite] = useState(''),
+    [permalink, setPermalink] = useState(''),
     [openedLesson, setOpenedLesson] = useState<Entry | null>(null),
     [editor, setEditor] = useState<'lesson' | 'homework' | 'result' | 'notification' | null>(null);
   if (!s)
@@ -596,6 +620,17 @@ export function StudentDetail() {
     ),
     homework = records.homework.filter((r) => r.student_id === id),
     results = records.result.filter((r) => r.student_id === id);
+  const room = classrooms.find(
+    (r) => r.kind === 'individual' && r.students.some((member) => member.id === s.id),
+  );
+  const openRoom = async (prepare = false) => {
+    try {
+      const r = room || (await api<Classroom>('/classrooms', { studentIds: [s.id] }));
+      navigate(`/lesson/${r.id}${prepare ? '/prepare' : ''}`);
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  };
   return (
     <>
       <Link className="text-link back-link" to="/students">
@@ -619,21 +654,49 @@ export function StudentDetail() {
             variant="secondary"
             onClick={async () => {
               try {
-                setInvite((await api(`/students/${s.id}/invite`, {})).url);
+                const r = room || (await api<Classroom>('/classrooms', { studentIds: [s.id] }));
+                setPermalink(r.link || '');
               } catch (e) {
                 toast((e as Error).message);
               }
             }}
           >
-            <Mail size={16} />
-            Пригласить в кабинет
+            <Copy size={16} />
+            Ссылка на занятия
           </Button>
-          <Button onClick={() => setBoard(true)}>
-            <PanelsTopLeft size={17} />
-            Новая доска
+          <Button disabled={s.status === 'paused'} onClick={() => void openRoom()}>
+            <Play size={17} />
+            Начать урок
           </Button>
         </div>
       </div>
+      <section className="student-classroom-card">
+        <div>
+          <span className="eyebrow">ПОСТОЯННАЯ УЧЕБНАЯ КОМНАТА</span>
+          <h2>
+            {room?.activeSession?.title ||
+              room?.lesson?.data.title ||
+              'Всё готово к вашим занятиям'}
+          </h2>
+          <p>
+            {room?.lesson
+              ? `${date(room.lesson.data.start, { hour: '2-digit', minute: '2-digit' })} МСК · ${room.lesson.data.duration} минут`
+              : 'Одна доска и одна ссылка для всех уроков этого ученика.'}
+          </p>
+          <div className="button-row">
+            <Button variant="secondary" onClick={() => void openRoom(true)}>
+              <PanelsTopLeft size={16} />
+              Подготовить доску
+            </Button>
+            <button className="text-link" onClick={() => void openRoom()}>
+              Войти на урок <ArrowRight size={16} />
+            </button>
+          </div>
+        </div>
+        <span className="student-classroom-icon">
+          <PanelsTopLeft size={43} />
+        </span>
+      </section>
       <div className="tabs page-tabs">
         {[
           ['overview', 'Обзор'],
@@ -672,12 +735,26 @@ export function StudentDetail() {
                 Уведомить ученика
               </Button>
             </div>
+            <button
+              className="text-link"
+              style={{ marginTop: 18, fontSize: 11 }}
+              onClick={async () => {
+                try {
+                  setInvite((await api(`/students/${s.id}/invite`, {})).url);
+                } catch (e) {
+                  toast((e as Error).message);
+                }
+              }}
+            >
+              <Mail size={15} />
+              Настроить вход в личный кабинет ученика
+            </button>
           </section>
           <section className="panel">
-            <SectionHeading title="Учебные доски" />
+            <SectionHeading title="Прежние материалы" />
             <div className="list-links">
               {boards
-                .filter((b) => b.student_id === id)
+                .filter((b) => b.student_id === id && b.id !== room?.board_id)
                 .map((b) => (
                   <Link key={b.id} to={`/board/${b.id}`}>
                     <PanelsTopLeft size={19} />
@@ -685,8 +762,8 @@ export function StudentDetail() {
                     <ArrowUpRight size={17} />
                   </Link>
                 ))}
-              {!boards.filter((b) => b.student_id === id).length && (
-                <p className="muted">Здесь появятся доски ученика.</p>
+              {!boards.filter((b) => b.student_id === id && b.id !== room?.board_id).length && (
+                <p className="muted">Новые материалы сохраняются в учебной комнате ученика.</p>
               )}
             </div>
             <hr />
@@ -803,10 +880,17 @@ export function StudentDetail() {
         </section>
       )}
       {edit && <StudentEditor student={s} onClose={() => setEdit(false)} />}{' '}
-      {board && <BoardCreate studentId={s.id} onClose={() => setBoard(false)} />}{' '}
       {invite && (
         <InviteDialog url={invite} title="Вход в кабинет · 7 дней" onClose={() => setInvite('')} />
       )}{' '}
+      {permalink && (
+        <InviteDialog
+          url={permalink}
+          title="Одна ссылка на все занятия"
+          description="Отправьте эту ссылку ученику один раз. Она открывает вход на занятие и общую учебную доску; от урока к уроку ссылка не меняется."
+          onClose={() => setPermalink('')}
+        />
+      )}
       {editor && <EntryEditor kind={editor} studentId={s.id} onClose={() => setEditor(null)} />}
       {openedLesson && <LessonDialog entry={openedLesson} onClose={() => setOpenedLesson(null)} />}
     </>
@@ -917,24 +1001,23 @@ export function LessonDialog({ entry, onClose }: { entry: Entry; onClose: () => 
           disabled={
             busy ||
             entry.data.status === 'cancelled' ||
-            (user.role !== 'teacher' && !entry.data.boardId)
+            (!entry.student_id && !entry.data.studentIds?.length)
           }
           onClick={async () => {
             setBusy(true);
             setError('');
             try {
-              let id = entry.data.boardId;
-              if (!id) {
-                const b = await api<Board>('/boards', {
-                  title: entry.data.title,
-                  studentId: entry.student_id,
-                });
-                id = b.id;
-                await update(entry, { boardId: id });
-              }
+              const room = await api(`/lessons/${entry.id}/classroom`, {});
               await refresh();
               onClose();
-              navigate(`/board/${id}`);
+              const ended = room.sessions.find((s: any) => s.lesson_id === entry.id && s.ended_at);
+              navigate(
+                ended
+                  ? `/lesson/${room.id}/summary/${ended.id}`
+                  : entry.data.status === 'completed'
+                    ? `/board/${entry.data.materialBoardId || entry.data.boardId || room.board_id}`
+                    : `/lesson/${room.id}?lesson=${entry.id}`,
+              );
             } catch (e) {
               setError((e as Error).message);
             } finally {
@@ -943,7 +1026,7 @@ export function LessonDialog({ entry, onClose }: { entry: Entry; onClose: () => 
           }}
         >
           <Play size={16} />
-          Открыть доску урока
+          {entry.data.status === 'completed' ? 'Итоги и материалы' : 'Войти на урок'}
         </Button>
       </div>
       {user.role === 'student' && (

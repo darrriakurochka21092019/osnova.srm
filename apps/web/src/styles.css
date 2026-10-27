@@ -1,15 +1,15 @@
 :root {
   font-family: 'Manrope Variable', 'Century Gothic', Arial, sans-serif;
-  color: #252640;
+  color: #111738;
   background: #f6f7fb;
   font-synthesis: none;
   font-weight: 450;
   font-size: 14px;
   line-height: 1.55;
   font-feature-settings: 'ss01' on;
-  --primary: #6152e8;
-  --primary-hover: #5142d8;
-  --text: #252640;
+  --primary: #5b4bff;
+  --primary-hover: #4d3feb;
+  --text: #111738;
   --muted: #858599;
   --line: #ececf4;
   --surface: #fff;

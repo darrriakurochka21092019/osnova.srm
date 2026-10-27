@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { PDFDocument } from 'pdf-lib';
+import { loginTeacher } from './helpers';
 
 test('teacher and student complete a lesson, collaborate, recover offline edits, import PDF and submit work', async ({
   browser,
@@ -12,12 +13,7 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
     expect(r.ok(), await r.text()).toBeTruthy();
     return r.json();
   };
-  await post('/auth/setup', {
-    name: 'Демо-преподаватель',
-    email: 'teacher@example.test',
-    password: 'teacher-test-password',
-  });
-  await request.patch('/api/v1/me', { data: { settings: { onboardingComplete: true } } });
+  await loginTeacher(request);
   const a = await post('/students', {
     name: 'Демо-ученик А',
     grade: '9 класс',
@@ -468,7 +464,12 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
     fullPage: true,
   });
   await page.goto('/finances');
-  await expect(page.getByText(/К оплате.*500/)).toBeVisible();
+  await expect(
+    page
+      .getByRole('row')
+      .filter({ has: page.locator(`a[href="/students/${a.id}"]`) })
+      .getByText(/^К оплате\s+500\s+₽$/),
+  ).toBeVisible();
   // All primary routes work at desktop and mobile widths with no document overflow.
   const routes = [
     '/',

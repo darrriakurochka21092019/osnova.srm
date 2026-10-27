@@ -349,7 +349,7 @@ export async function boardRoutes({ app, db, config, io }: Context) {
         ]);
         await tx.query('UPDATE boards SET updated_at=now() WHERE id=$1', [page.board_id]);
         await tx.query(
-          'DELETE FROM snapshots WHERE page_id=$1 AND id NOT IN (SELECT id FROM snapshots WHERE page_id=$1 ORDER BY created_at DESC LIMIT 50)',
+          'DELETE FROM snapshots WHERE page_id=$1 AND label IS NULL AND id NOT IN (SELECT id FROM snapshots WHERE page_id=$1 AND label IS NULL ORDER BY created_at DESC LIMIT 50)',
           [pageId],
         );
       }
@@ -378,10 +378,25 @@ export async function boardRoutes({ app, db, config, io }: Context) {
     requireThat(b.owner_id === req.user.id);
     return (
       await db.query(
-        'SELECT s.id,s.revision,s.created_at,u.name AS author FROM snapshots s JOIN users u ON u.id=s.author_id WHERE page_id=$1 ORDER BY s.created_at DESC LIMIT 50',
+        `SELECT s.id,s.revision,s.created_at,s.label,s.lesson_session_id,u.name AS author,r.data->>'title' AS lesson_title FROM snapshots s JOIN users u ON u.id=s.author_id LEFT JOIN lesson_sessions ls ON ls.id=s.lesson_session_id LEFT JOIN records r ON r.id=ls.lesson_id WHERE page_id=$1 ORDER BY s.created_at DESC LIMIT 150`,
         [id],
       )
     ).rows;
+  });
+  app.get('/api/v1/pages/:id/history/:snapshotId', async (req) => {
+    const id = uuidParam(req.params, 'id');
+    const page = (await db.query('SELECT board_id FROM pages WHERE id=$1', [id])).rows[0];
+    requireThat(page, 404, 'Холст не найден');
+    const board = await boardAccess(db, req.user, page.board_id);
+    requireThat(board.owner_id === req.user.id);
+    const snapshot = (
+      await db.query('SELECT * FROM snapshots WHERE id=$1 AND page_id=$2', [
+        uuidParam(req.params, 'snapshotId'),
+        id,
+      ])
+    ).rows[0];
+    requireThat(snapshot, 404, 'Версия не найдена');
+    return snapshot;
   });
   app.post('/api/v1/pages/:id/restore', async (req) => {
     const id = uuidParam(req.params, 'id');

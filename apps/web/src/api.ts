@@ -49,6 +49,7 @@ export const fromLocalInput = (value: string) => new Date(`${value}:00+03:00`).t
 export const todayKey = () => localInput(new Date()).slice(0, 10);
 export const statusLabels: Record<string, string> = {
   planned: 'Запланирован',
+  live: 'Идёт урок',
   completed: 'Проведён',
   cancelled: 'Отменён',
   rescheduled: 'Перенесён',

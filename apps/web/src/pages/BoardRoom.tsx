@@ -77,8 +77,29 @@ import {
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 (window as any).EXCALIDRAW_ASSET_PATH = '/excalidraw-assets/';
 
-type SaveState = 'saved' | 'saving' | 'offline' | 'error';
-type EditorHandle = {
+export type SaveState = 'saved' | 'saving' | 'offline' | 'error';
+export type BoardToolState = {
+  type: string;
+  color: string;
+  width: number;
+  zoom: number;
+  readOnly: boolean;
+};
+export type BoardPresentation = {
+  id: string;
+  title: string;
+  slideIndex: number;
+  slides: { fileId: string; src?: string }[];
+};
+export type BoardControls = {
+  upload: () => void;
+  export: () => void;
+  history: () => void;
+  files: () => void;
+  background: () => void;
+  isBusy: () => boolean;
+};
+export type EditorHandle = {
   flush: () => Promise<void>;
   export: (type: 'png' | 'pdf' | 'scene') => Promise<void>;
   addMedia: (elements: any[], files: any[]) => void;
@@ -86,6 +107,26 @@ type EditorHandle = {
   addTemplate: (kind: string) => void;
   setPen: (highlight: boolean) => void;
   revision: () => number;
+  isSaved: () => boolean;
+  setTool: (type: string) => void;
+  setColor: (color: string) => void;
+  setWidth: (width: number) => void;
+  undo: (redo?: boolean) => void;
+  zoomBy: (amount: number) => void;
+  fit: () => void;
+  slide: (id: string, index: number) => Promise<void>;
+  preview: (scene: any[] | null, background?: BoardBackground) => Promise<void>;
+};
+type BoardRoomProps = {
+  boardId?: string;
+  embedded?: boolean;
+  editorRef?: React.MutableRefObject<EditorHandle | null>;
+  controlsRef?: React.MutableRefObject<BoardControls | null>;
+  onSaveState?: (state: SaveState, error?: string) => void;
+  onTools?: (state: BoardToolState) => void;
+  onPresentations?: (presentations: BoardPresentation[]) => void;
+  onReady?: () => void;
+  forceReadOnly?: boolean;
 };
 const fingerprint = (e?: any) => (e ? `${e.version}:${e.versionNonce}` : '');
 const download = (blob: Blob, name: string) => {
@@ -113,8 +154,9 @@ function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   );
 }
 
-export default function BoardRoom() {
-  const { id } = useParams(),
+export default function BoardRoom(props: BoardRoomProps = {}) {
+  const { id: routeId } = useParams(),
+    id = props.boardId || routeId,
     [search, setSearch] = useSearchParams(),
     { user, toast, refresh } = useApp();
   const [board, setBoard] = useState<Board | null>(null),
@@ -133,9 +175,33 @@ export default function BoardRoom() {
     [editorReady, setEditorReady] = useState(false),
     [peers, setPeers] = useState<{ id: string; name: string }[]>([]),
     [conflict, setConflict] = useState<{ elements: any[]; files: any } | null>(null);
-  const handle = useRef<EditorHandle | null>(null),
+  const internalHandle = useRef<EditorHandle | null>(null),
+    handle = props.editorRef || internalHandle,
     fileInput = useRef<HTMLInputElement>(null),
     importing = useRef(false);
+  useEffect(() => {
+    props.onSaveState?.(backgroundBusy ? 'saving' : save, saveError);
+  }, [save, saveError, backgroundBusy]);
+  useEffect(() => {
+    if (!props.controlsRef) return;
+    props.controlsRef.current = {
+      upload: () => fileInput.current?.click(),
+      export: () => setExportOpen(true),
+      history: () => setHistoryOpen(true),
+      files: async () => {
+        try {
+          setAssets(await api(`/boards/${id}/files`));
+        } catch (e) {
+          toast((e as Error).message);
+        }
+      },
+      background: () => setBackgroundOpen((v) => !v),
+      isBusy: () => importing.current,
+    };
+    return () => {
+      if (props.controlsRef) props.controlsRef.current = null;
+    };
+  }, [id, props.controlsRef]);
   const load = useCallback(async () => {
     try {
       let b = await api<Board>(`/boards/${id}`);
@@ -148,7 +214,7 @@ export default function BoardRoom() {
   useEffect(() => {
     void load();
   }, [load]);
-  const readOnly = board?.permission === 'view' || !!board?.archived;
+  const readOnly = props.forceReadOnly || board?.permission === 'view' || !!board?.archived;
   const importFile = useCallback(
     async (file: File) => {
       if (!board || readOnly || importing.current) return;
@@ -289,7 +355,9 @@ export default function BoardRoom() {
   useEffect(() => {
     const assetId = search.get('import');
     if (!board || !editorReady || !assetId || importing.current) return;
-    setSearch({}, { replace: true });
+    const remaining = new URLSearchParams(search);
+    remaining.delete('import');
+    setSearch(remaining, { replace: true });
     fetch(fileUrl(assetId))
       .then(async (r) => {
         if (!r.ok) throw new Error('Не удалось открыть материал');
@@ -327,7 +395,7 @@ export default function BoardRoom() {
     );
   if (!board || !board.canvas_page_id) return <Busy />;
   return (
-    <div className="board-room">
+    <div className={`board-room ${props.embedded ? 'lesson-embedded' : ''}`}>
       <header className="board-topbar">
         <Link to="/boards" className="icon-btn" aria-label="Назад к доскам">
           <ArrowLeft size={21} />
@@ -533,8 +601,13 @@ export default function BoardRoom() {
             onPeers={setPeers}
             onConflict={setConflict}
             onPages={load}
-            onReady={() => setEditorReady(true)}
+            onReady={() => {
+              setEditorReady(true);
+              props.onReady?.();
+            }}
             onBackground={(background) => setBoard((b) => (b ? { ...b, background } : b))}
+            onTools={props.onTools}
+            onPresentations={props.onPresentations}
           />
         </div>
       </div>
@@ -574,6 +647,8 @@ export default function BoardRoom() {
           pageId={board.canvas_page_id}
           revision={() => handle.current?.revision() || 0}
           onClose={() => setHistoryOpen(false)}
+          editor={handle}
+          embedded={props.embedded}
         />
       )}
       {exportOpen && (
@@ -725,6 +800,8 @@ function PageEditor({
   onPages,
   onReady,
   onBackground,
+  onTools,
+  onPresentations,
 }: {
   board: Board;
   pageId: string;
@@ -736,6 +813,8 @@ function PageEditor({
   onPages: () => Promise<void>;
   onReady: () => void;
   onBackground: (background: BoardBackground) => void;
+  onTools?: (state: BoardToolState) => void;
+  onPresentations?: (presentations: BoardPresentation[]) => void;
 }) {
   const { user, toast } = useApp();
   const [initial, setInitial] = useState<any>(null),
@@ -743,8 +822,13 @@ function PageEditor({
     [editor, setEditor] = useState<ExcalidrawImperativeAPI | null>(null),
     [view, setView] = useState({ scrollX: 0, scrollY: 0, zoom: 1, width: 0, height: 0 }),
     [decks, setDecks] = useState<any[]>([]),
-    [switching, setSwitching] = useState('');
+    [switching, setSwitching] = useState(''),
+    [previewing, setPreviewing] = useState(false),
+    [previewBackground, setPreviewBackground] = useState<BoardBackground | null>(null);
   const deckStamp = useRef('');
+  const previewScene = useRef<any[] | null>(null),
+    assetUrls = useRef(new Map<string, string>()),
+    toolStamp = useRef('');
   const pointerDown = useRef(false),
     dragStart = useRef<any[] | null>(null),
     gestureEpoch = useRef(0),
@@ -815,16 +899,35 @@ function PageEditor({
     else send();
   };
   const publishDecks = () => {
-    const next = current.current.filter((e) => !e.isDeleted && presentationOf(e));
+    const next = (previewScene.current || current.current).filter(
+      (e) => !e.isDeleted && presentationOf(e),
+    );
     const stamp = next.map((e) => `${e.id}:${fingerprint(e)}`).join('|');
     if (deckStamp.current !== stamp) {
       deckStamp.current = stamp;
       setDecks(next);
+      onPresentations?.(
+        next.map((e) => {
+          const p = presentationOf(e)!;
+          return {
+            id: e.id,
+            title: p.title,
+            slideIndex: p.slideIndex,
+            slides: p.slides.map((s) => ({
+              fileId: s.fileId,
+              src:
+                assetUrls.current.get(s.fileId) ||
+                fileData.current[s.fileId as keyof BinaryFiles]?.dataURL,
+            })),
+          };
+        }),
+      );
     }
   };
   const renderScene = (
     captureUpdate: (typeof CaptureUpdateAction)[keyof typeof CaptureUpdateAction] = CaptureUpdateAction.NEVER,
   ) => {
+    if (previewScene.current) return;
     if (pointerDown.current) {
       deferredRender.current = true;
       return;
@@ -924,7 +1027,11 @@ function PageEditor({
       renderScene();
     queueSave();
   };
-  const loadFiles = async (elements: any[], apiEditor?: ExcalidrawImperativeAPI) => {
+  const loadFiles = async (
+    elements: any[],
+    apiEditor?: ExcalidrawImperativeAPI,
+    catalogOnly = false,
+  ) => {
     const needed = new Set(
       elements
         .filter(
@@ -935,9 +1042,14 @@ function PageEditor({
         )
         .map((e) => e.fileId),
     );
-    if (!needed.size) return;
+    if (!needed.size && !catalogOnly) return;
     const assets = await api<Asset[]>(`/boards/${board.id}/files`);
-    for (const f of assets) if (f.excalidraw_id) knownFiles.current.add(f.excalidraw_id);
+    for (const f of assets)
+      if (f.excalidraw_id) {
+        knownFiles.current.add(f.excalidraw_id);
+        assetUrls.current.set(f.excalidraw_id, fileUrl(f.id));
+      }
+    deckStamp.current = '';
     const added: any[] = [];
     for (const f of assets)
       if (
@@ -1172,7 +1284,7 @@ function PageEditor({
       queueMicrotask(() => {
         if (epoch !== gestureEpoch.current || !mounted.current) return;
         pointerDown.current = false;
-        if (!readOnly && ready.current)
+        if (!readOnly && ready.current && !previewScene.current)
           captureRendered(
             editor.getSceneElementsIncludingDeleted(),
             dragStart.current || current.current,
@@ -1273,8 +1385,9 @@ function PageEditor({
     };
   }, [editor, !!initial]);
   const changeSlide = async (id: string, index: number) => {
-    if (readOnly || switching) return;
-    const deck = current.current.find((e) => e.id === id),
+    if ((readOnly && !previewScene.current) || switching) return;
+    const source = previewScene.current || current.current;
+    const deck = source.find((e) => e.id === id),
       presentation = deck && presentationOf(deck);
     if (
       !presentation ||
@@ -1290,6 +1403,16 @@ function PageEditor({
         customData: { ...deck.customData, presentation: { ...presentation, slideIndex: index } },
       });
       await loadFiles([next], editor || undefined);
+      if (previewScene.current) {
+        // Browsing a saved lesson is local; its slide selection never changes the live board.
+        previewScene.current = source.map((e) => (e.id === id ? next : e));
+        editor?.updateScene({
+          elements: restoreElements(projectCanvas(previewScene.current), null),
+          captureUpdate: CaptureUpdateAction.NEVER,
+        });
+        publishDecks();
+        return;
+      }
       current.current = current.current.map((e) => (e.id === id ? next : e));
       renderScene(CaptureUpdateAction.IMMEDIATELY);
       void persist();
@@ -1320,6 +1443,113 @@ function PageEditor({
     handleRef.current = {
       flush,
       revision: () => revision.current,
+      isSaved: () => !diff().length && !pendingOperation.current,
+      setTool(type) {
+        if (readOnly || previewScene.current) return;
+        const ink = type === 'pen' || type === 'marker';
+        const a = editor.getAppState();
+        editor.updateScene({
+          appState: {
+            currentItemOpacity: type === 'marker' ? 30 : 100,
+            currentItemStrokeWidth:
+              type === 'marker'
+                ? 8
+                : type === 'pen' && a.currentItemOpacity < 100
+                  ? 2
+                  : a.currentItemStrokeWidth,
+          },
+        });
+        editor.setActiveTool({ type: (ink ? 'freedraw' : type) as any });
+      },
+      setColor(color) {
+        if (!readOnly && !previewScene.current) {
+          const ids = editor.getAppState().selectedElementIds;
+          editor.updateScene({
+            appState: { currentItemStrokeColor: color },
+            elements: editor
+              .getSceneElementsIncludingDeleted()
+              .map((e) => (ids[e.id] ? changedElement(e, { strokeColor: color }) : e)),
+            captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+          });
+        }
+      },
+      setWidth(width) {
+        if (!readOnly && !previewScene.current) {
+          const ids = editor.getAppState().selectedElementIds;
+          editor.updateScene({
+            appState: { currentItemStrokeWidth: width },
+            elements: editor
+              .getSceneElementsIncludingDeleted()
+              .map((e) => (ids[e.id] ? changedElement(e, { strokeWidth: width }) : e)),
+            captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+          });
+        }
+      },
+      undo(redo = false) {
+        if (readOnly || previewScene.current) return;
+        const root =
+          document.querySelector('.lesson-embedded .excalidraw') ||
+          document.querySelector('.excalidraw');
+        (root as HTMLElement)?.focus();
+        root?.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'z',
+            code: 'KeyZ',
+            ctrlKey: true,
+            metaKey: true,
+            shiftKey: redo,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      },
+      zoomBy(amount) {
+        const a = editor.getAppState(),
+          zoom = Math.max(0.1, Math.min(3, a.zoom.value + amount));
+        const x = -a.scrollX + a.width / (2 * a.zoom.value),
+          y = -a.scrollY + a.height / (2 * a.zoom.value);
+        editor.updateScene({
+          appState: {
+            zoom: { value: zoom as any },
+            scrollX: a.width / (2 * zoom) - x,
+            scrollY: a.height / (2 * zoom) - y,
+          },
+        });
+      },
+      fit() {
+        const visible = restoreElements(
+          projectCanvas(previewScene.current || current.current).filter((e) => !e.isDeleted),
+          null,
+        );
+        if (visible.length)
+          editor.scrollToContent(visible, { fitToContent: true, viewportZoomFactor: 0.8 });
+      },
+      slide: changeSlide,
+      async preview(scene, background) {
+        if (scene) {
+          await flush();
+          if (diff().length || pendingOperation.current)
+            throw new Error('Дождитесь сохранения текущих изменений');
+          await loadFiles(scene, editor);
+        }
+        previewScene.current = scene;
+        setPreviewing(!!scene);
+        setPreviewBackground(scene ? background || null : null);
+        deckStamp.current = '';
+        const shown = scene || current.current;
+        editor.updateScene({
+          elements: restoreElements(projectCanvas(shown), null),
+          appState: { viewModeEnabled: readOnly || !!scene },
+          captureUpdate: CaptureUpdateAction.NEVER,
+        });
+        publishDecks();
+        const visible = restoreElements(
+          projectCanvas(shown).filter((e) => !e.isDeleted),
+          null,
+        );
+        if (visible.length)
+          editor.scrollToContent(visible, { fitToContent: true, viewportZoomFactor: 0.8 });
+      },
       placement() {
         const visible = current.current.filter(
           (e) => !e.isDeleted && !slideIsHidden(e, current.current),
@@ -1343,6 +1573,9 @@ function PageEditor({
           captureUpdate: CaptureUpdateAction.IMMEDIATELY,
         });
         editor.scrollToContent(elements, { fitToContent: true, viewportZoomFactor: 0.75 });
+        void loadFiles([], editor, true)
+          .then(publishDecks)
+          .catch((e) => toast(e.message));
       },
       setPen(highlight) {
         editor.updateScene({
@@ -1379,7 +1612,7 @@ function PageEditor({
           files = editor.getFiles();
         const name = board.title;
         if (type === 'scene') {
-          const allSlides = current.current.flatMap((e) =>
+          const allSlides = (previewScene.current || current.current).flatMap((e) =>
             (presentationOf(e)?.slides || []).map((slide) => ({
               type: 'image',
               fileId: slide.fileId,
@@ -1394,9 +1627,9 @@ function PageEditor({
                     type: 'excalidraw',
                     version: 2,
                     source: 'osnova',
-                    elements: current.current,
+                    elements: previewScene.current || current.current,
                     appState: { viewBackgroundColor: '#fff' },
-                    osnova: { background: board.background || 'white' },
+                    osnova: { background: previewBackground || board.background || 'white' },
                     files: fileData.current,
                   },
                   null,
@@ -1431,7 +1664,7 @@ function PageEditor({
           ctx,
           canvas.width,
           canvas.height,
-          board.background || 'white',
+          previewBackground || board.background || 'white',
           24 - minX,
           24 - minY,
         );
@@ -1469,8 +1702,13 @@ function PageEditor({
     <>
       <div
         className="canvas-paper"
-        data-background={board.background || 'white'}
-        style={backgroundStyle(board.background || 'white', view.zoom, view.scrollX, view.scrollY)}
+        data-background={previewBackground || board.background || 'white'}
+        style={backgroundStyle(
+          previewBackground || board.background || 'white',
+          view.zoom,
+          view.scrollX,
+          view.scrollY,
+        )}
       />
       <Excalidraw
         excalidrawAPI={setEditor}
@@ -1478,13 +1716,13 @@ function PageEditor({
         langCode="ru-RU"
         theme="light"
         name={board.title}
-        viewModeEnabled={readOnly}
+        viewModeEnabled={readOnly || previewing}
         isCollaborating={true}
         validateEmbeddable={false}
         aiEnabled={false}
         UIOptions={{
           canvasActions: {
-            loadScene: !readOnly,
+            loadScene: !readOnly && !previewing,
             saveToActiveFile: false,
             export: false,
             changeViewBackgroundColor: false,
@@ -1499,12 +1737,29 @@ function PageEditor({
             width: state.width,
             height: state.height,
           });
+          const nextTool: BoardToolState = {
+            type:
+              state.activeTool.type === 'freedraw'
+                ? state.currentItemOpacity < 100
+                  ? 'marker'
+                  : 'pen'
+                : state.activeTool.type,
+            color: state.currentItemStrokeColor,
+            width: state.currentItemStrokeWidth,
+            zoom: state.zoom.value,
+            readOnly: readOnly || !!previewScene.current,
+          };
+          const stamp = JSON.stringify(nextTool);
+          if (stamp !== toolStamp.current) {
+            toolStamp.current = stamp;
+            onTools?.(nextTool);
+          }
           if (!ready.current) return;
           if (state.gridModeEnabled) editor?.updateScene({ appState: { gridModeEnabled: false } });
           fileData.current = files;
           // The live stroke belongs to the native engine. Do not clone, project, save or
           // reconcile it on each sample (a pen may send hundreds of samples per second).
-          if (pointerDown.current || readOnly) return;
+          if (pointerDown.current || readOnly || previewScene.current) return;
           const version = elements.reduce((n, e) => n + e.version, 0);
           if (nativeScene.current?.elements === elements && nativeScene.current.version === version)
             return;
@@ -1530,12 +1785,14 @@ function PageEditor({
               </span>
             </WelcomeScreen.Center.Logo>
             <WelcomeScreen.Center.Heading>
-              Каждый урок — новое открытие
+              {previewing ? 'В этой версии холст пуст' : 'Каждый урок — новое открытие'}
             </WelcomeScreen.Center.Heading>
             <div className="canvas-welcome-text">
-              Начните с текста, рисунка или загрузите рабочий лист.
+              {previewing
+                ? 'У этого сохранения ещё нет объектов.'
+                : 'Начните с текста, рисунка или загрузите рабочий лист.'}
               <br />
-              Всё сохранится в вашем пространстве.
+              {!previewing && 'Всё сохранится в вашем пространстве.'}
             </div>
           </WelcomeScreen.Center>
         </WelcomeScreen>
@@ -1761,56 +2018,154 @@ function BoardHistory({
   pageId,
   revision,
   onClose,
+  editor,
+  embedded,
 }: {
   pageId: string;
   revision: () => number;
   onClose: () => void;
+  editor?: React.MutableRefObject<EditorHandle | null>;
+  embedded?: boolean;
 }) {
   const { toast } = useApp();
   const [list, setList] = useState<any[]>([]),
+    [selected, setSelected] = useState<any>(null),
     [error, setError] = useState(''),
-    [selected, setSelected] = useState<any>(null);
+    [busy, setBusy] = useState(false),
+    [confirm, setConfirm] = useState(false);
   useEffect(() => {
-    api(`/pages/${pageId}/history`)
-      .then(setList)
-      .catch((e) => setError(e.message));
+    void (async () => {
+      await editor?.current?.flush();
+      setList(await api(`/pages/${pageId}/history`));
+    })().catch((e) => setError(e.message));
+    return () => {
+      void editor?.current?.preview(null);
+    };
   }, [pageId]);
-  if (selected)
-    return (
-      <Confirm
-        title="Восстановить версию?"
-        text="Текущий холст попадёт в историю. Участники увидят восстановленную версию."
-        onClose={() => setSelected(null)}
-        onConfirm={async () => {
-          await api(`/pages/${pageId}/restore`, {
-            snapshotId: selected.id,
-            expectedRevision: revision(),
-          });
-          toast('Версия восстановлена');
-          onClose();
-        }}
-      />
-    );
+  const leave = async () => {
+    await editor?.current?.preview(null);
+    onClose();
+  };
+  const select = async (version: any) => {
+    setBusy(true);
+    setError('');
+    try {
+      const snapshot = await api(`/pages/${pageId}/history/${version.id}`);
+      await editor?.current?.preview(snapshot.scene, snapshot.background);
+      setSelected(version);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <Modal title="История холста" onClose={onClose}>
-      <p className="muted">
-        Последние 50 сохранённых версий. Восстановление доступно преподавателю.
-      </p>
-      <FormError error={error} />
-      {list.map((s) => (
-        <button className="history-row" key={s.id} onClick={() => setSelected(s)}>
-          <History size={17} />
-          <div>
-            <strong>Версия {s.revision}</strong>
-            <small>
-              {date(s.created_at, { hour: '2-digit', minute: '2-digit', second: '2-digit' })} ·{' '}
-              {s.author}
-            </small>
+    <>
+      {selected && (
+        <div className="lesson-preview-banner">
+          <History size={18} />
+          <strong>Просмотр сохранённой версии</strong>
+          <span>{date(selected.created_at, { hour: '2-digit', minute: '2-digit' })} МСК</span>
+          <button
+            onClick={async () => {
+              await editor?.current?.preview(null);
+              setSelected(null);
+            }}
+          >
+            Вернуться к текущей
+          </button>
+        </div>
+      )}
+      <div className={`lesson-history-modal ${embedded ? 'embedded-history' : ''}`}>
+        <Modal title="История уроков" onClose={() => void leave()}>
+          <p className="muted">Этапы занятий и последние изменения общего холста.</p>
+          <FormError error={error} />
+          <div className="lesson-version-list">
+            <button
+              className={`lesson-version ${!selected ? 'active' : ''}`}
+              onClick={async () => {
+                await editor?.current?.preview(null);
+                setSelected(null);
+              }}
+            >
+              <span className="version-dot" />
+              <div>
+                <strong>Текущий холст</strong>
+                <small>Версия {revision()} · все участники</small>
+              </div>
+              <Badge tone="mint">Текущая</Badge>
+            </button>
+            {list.map((v) => (
+              <button
+                disabled={busy}
+                key={v.id}
+                className={`lesson-version ${selected?.id === v.id ? 'active' : ''}`}
+                onClick={() => void select(v)}
+              >
+                <span className="version-dot" />
+                <div>
+                  <strong>
+                    {date(v.created_at, { hour: '2-digit', minute: '2-digit' })} ·{' '}
+                    {v.label || 'Изменения доски'}
+                  </strong>
+                  <small>
+                    {v.lesson_title || v.author} · версия {v.revision}
+                  </small>
+                </div>
+              </button>
+            ))}
           </div>
-          <ArrowRight size={17} />
-        </button>
-      ))}
-      {!list.length && <Empty title="История начнётся с первого изменения" />}
-    </Modal>
+          {selected && (
+            <div className="lesson-version-detail">
+              <h3>{selected.label || 'Сохранённая версия'}</h3>
+              <p>{selected.lesson_title || 'Общий учебный холст'}</p>
+              <p className="muted">
+                {selected.author} ·{' '}
+                {date(selected.created_at, { hour: '2-digit', minute: '2-digit' })}
+              </p>
+              <Button
+                disabled={busy || selected.revision === revision()}
+                onClick={() => setConfirm(true)}
+              >
+                Восстановить эту версию
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={async () => {
+                  try {
+                    await editor?.current?.export('scene');
+                  } catch (e) {
+                    setError((e as Error).message);
+                  }
+                }}
+              >
+                <Download size={17} />
+                Скачать копию
+              </Button>
+            </div>
+          )}
+          {!list.length && <Empty title="История начнётся с первого изменения" />}
+          <p className="lesson-history-foot">
+            При восстановлении текущая версия тоже останется в истории.
+          </p>
+        </Modal>
+      </div>
+      {confirm && (
+        <Confirm
+          title="Восстановить версию?"
+          text="Текущий холст попадёт в историю. Участники увидят восстановленную версию."
+          onClose={() => setConfirm(false)}
+          onConfirm={async () => {
+            await api(`/pages/${pageId}/restore`, {
+              snapshotId: selected.id,
+              expectedRevision: revision(),
+            });
+            toast('Версия восстановлена');
+            setConfirm(false);
+            await leave();
+          }}
+        />
+      )}
+    </>
   );
 }
