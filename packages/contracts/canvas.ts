@@ -22,7 +22,14 @@ export function slideIsHidden(
   element: any,
   scene: readonly any[],
   index?: ReadonlyMap<string, any>,
+  depth = 0,
 ): boolean {
+  const parentId = element.customData?.stickerAnnotation?.stickerId;
+  if (parentId) {
+    if (depth > 8) return true;
+    const parent = index ? index.get(parentId) : scene.find((e) => e.id === parentId);
+    if (parent && (parent.isDeleted || slideIsHidden(parent, scene, index, depth + 1))) return true;
+  }
   const annotation = annotationOf(element);
   if (!annotation) return false;
   const deck = index

@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { PDFDocument } from 'pdf-lib';
-import { loginTeacher } from './helpers';
+import { loginTeacher, selectPresentation, addNote } from './helpers';
 
 async function noHorizontalOverflow(page: Page) {
   expect(
@@ -75,7 +75,8 @@ test('one student link covers preparation, waiting, a shared lesson, comments, s
     mimeType: 'application/pdf',
     buffer: Buffer.from(await pdf.save()),
   });
-  await expect(page.getByRole('button', { name: 'Слайд 2', exact: true })).toBeVisible();
+  await selectPresentation(page, 'Уравнения');
+  await expect(page.getByLabel('Слайд презентации Уравнения')).toHaveValue('0');
   await expect(page.locator('.lesson-save')).toContainText('Все изменения сохранены');
   await page.getByRole('button', { name: 'Ручка', exact: true }).click();
   const area = await page.locator('.lesson-board-area').boundingBox();
@@ -99,8 +100,9 @@ test('one student link covers preparation, waiting, a shared lesson, comments, s
     .poll(async () => (await scene()).filter((e) => e.type === 'freedraw' && !e.isDeleted).length)
     .toBe(1);
   await pen.detach();
-  await page.getByRole('button', { name: 'Слайд 2', exact: true }).click();
-  await page.getByRole('button', { name: 'Заметка', exact: true }).click();
+  await selectPresentation(page, 'Уравнения');
+  await page.getByRole('button', { name: 'Следующий слайд: Уравнения', exact: true }).click();
+  await addNote(page);
   await expect
     .poll(async () => (await scene()).filter((e) => e.type === 'text' && !e.isDeleted).length)
     .toBe(1);
@@ -189,15 +191,19 @@ test('one student link covers preparation, waiting, a shared lesson, comments, s
   });
   await pupil.goto(`/lesson/${room.id}/materials/${sessionId}`);
   await expect(pupil.getByRole('button', { name: 'Ручка', exact: true })).toBeDisabled();
-  await expect(pupil.getByRole('button', { name: 'Слайд 1', exact: true })).toBeEnabled();
-  await pupil.getByRole('button', { name: 'Слайд 1', exact: true }).click();
-  await expect(pupil.getByLabel('Перейти к слайду')).toHaveValue('0');
+  await selectPresentation(pupil, 'Уравнения');
+  await expect(
+    pupil.getByRole('button', { name: 'Предыдущий слайд: Уравнения', exact: true }),
+  ).toBeEnabled();
+  await pupil.getByRole('button', { name: 'Предыдущий слайд: Уравнения', exact: true }).click();
+  await expect(pupil.getByLabel('Слайд презентации Уравнения')).toHaveValue('0');
   expect(
     (await scene()).find((e) => e.customData?.presentation)?.customData.presentation.slideIndex,
   ).toBe(1);
   await pupil.setViewportSize({ width: 740, height: 430 });
-  await expect(pupil.getByLabel('Перейти к слайду')).toBeVisible();
-  await pupil.getByLabel('Перейти к слайду').selectOption('1');
+  await selectPresentation(pupil, 'Уравнения');
+  await expect(pupil.getByLabel('Слайд презентации Уравнения')).toBeVisible();
+  await pupil.getByLabel('Слайд презентации Уравнения').selectOption('1');
   await noHorizontalOverflow(pupil);
   await pupil.screenshot({ path: testInfo.outputPath('lesson-materials-landscape.png') });
   await pupil.setViewportSize({ width: 390, height: 844 });
@@ -280,7 +286,7 @@ test('three personal links enter one mini-group with four real participants and 
   });
   await expect(pupils[0].page.getByRole('button', { name: 'Ручка', exact: true })).toBeDisabled();
   await expect(pupils[1].page.getByRole('button', { name: 'Ручка', exact: true })).toBeEnabled();
-  await pupils[1].page.getByRole('button', { name: 'Заметка', exact: true }).click();
+  await addNote(pupils[1].page);
   const board = await (await request.get(`/api/v1/boards/${room.board_id}`)).json();
   await expect
     .poll(

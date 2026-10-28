@@ -3,15 +3,12 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft,
   ArrowRight,
-  ArrowUpRight,
   Check,
   ChevronDown,
   Copy,
   Download,
-  Eraser,
   Expand,
   FileText,
-  FolderOpen,
   Grid2X2,
   Hand,
   History,
@@ -20,27 +17,16 @@ import {
   MicOff,
   Minus,
   MoreHorizontal,
-  MousePointer2,
   PanelRightClose,
-  Pencil,
   PhoneOff,
   Plus,
   Send,
-  Square,
-  Circle,
-  Slash,
-  Type,
-  Undo2,
-  Redo2,
-  Upload,
   Users,
   VideoOff,
   MonitorOff,
   X,
-  Highlighter,
-  StickyNote,
 } from 'lucide-react';
-import type { Asset, BoardBackground, LessonSession } from '../../../../packages/contracts';
+import type { BoardBackground, LessonSession } from '../../../../packages/contracts';
 import type {
   BoardControls,
   BoardPresentation,
@@ -60,28 +46,8 @@ import {
   PersonalRoomLinks,
   useClassroom,
 } from './shared';
+import BoardTools from '../board/BoardTools';
 const BoardRoom = lazy(() => import('../pages/BoardRoom'));
-const colors = [
-  ['#252846', 'Графитовый'],
-  ['#554bff', 'Индиго'],
-  ['#30b995', 'Мятный'],
-  ['#ffa16c', 'Персиковый'],
-  ['#b9afff', 'Лавандовый'],
-];
-const tools = [
-  ['selection', 'Выделение', MousePointer2],
-  ['hand', 'Перемещение холста', Hand],
-  ['pen', 'Ручка', Pencil],
-  ['marker', 'Маркер', Highlighter],
-  ['eraser', 'Ластик', Eraser],
-  ['text', 'Текст', Type],
-  ['rectangle', 'Прямоугольник', Square],
-  ['ellipse', 'Эллипс', Circle],
-  ['line', 'Линия', Slash],
-  ['arrow', 'Стрелка', ArrowUpRight],
-  ['note', 'Заметка', StickyNote],
-] as const;
-
 export default function LessonWorkspace({
   mode = 'live',
 }: {
@@ -113,7 +79,6 @@ export default function LessonWorkspace({
       readOnly: false,
     }),
     [catalog, setCatalog] = useState<BoardPresentation[]>([]),
-    [deckId, setDeckId] = useState(''),
     [sidebar, setSidebar] = useState(() => window.innerWidth > 1000),
     [chatOpen, setChatOpen] = useState(true),
     [more, setMore] = useState(false),
@@ -127,9 +92,6 @@ export default function LessonWorkspace({
   const messageId = useRef<string | null>(null);
   const teacher = room?.owner_id === user.id,
     archive = mode === 'materials';
-  const selected = catalog.find((p) => p.id === deckId) || catalog[0];
-  const disabled = !ready || tool.readOnly || archive;
-  const slidesDisabled = !ready || (tool.readOnly && !archive);
   useEffect(() => {
     setReady(false);
   }, [room?.board_id, room?.permission]);
@@ -363,15 +325,6 @@ export default function LessonWorkspace({
             )}
             <button
               onClick={() => {
-                controls.current?.files();
-                setMore(false);
-              }}
-            >
-              <FolderOpen size={17} />
-              Исходные файлы
-            </button>
-            <button
-              onClick={() => {
                 setSidebar((v) => !v);
                 setMore(false);
               }}
@@ -410,110 +363,12 @@ export default function LessonWorkspace({
               onPresentations={setCatalog}
             />
           </Suspense>
-          <div className="lesson-drawing-tools" role="toolbar" aria-label="Инструменты доски">
-            {tools.map(([type, label, Icon]) => (
-              <button
-                key={type}
-                className={`lesson-tool ${tool.type === type ? 'active' : ''}`}
-                disabled={disabled}
-                aria-label={label}
-                title={label}
-                onClick={() =>
-                  type === 'note'
-                    ? editor.current?.addTemplate('note')
-                    : editor.current?.setTool(type)
-                }
-              >
-                <Icon size={23} />
-              </button>
-            ))}
-            <button
-              className="lesson-tool"
-              disabled={disabled}
-              aria-label="Загрузить PDF или изображение"
-              title="Загрузить PDF или изображение"
-              onClick={() => controls.current?.upload()}
-            >
-              <Upload size={23} />
-            </button>
-            <span className="lesson-tool-divider" />
-            <button
-              className="lesson-tool"
-              disabled={disabled}
-              aria-label="Отменить действие"
-              title="Отменить действие"
-              onClick={() => editor.current?.undo()}
-            >
-              <Undo2 size={23} />
-            </button>
-            <button
-              className="lesson-tool"
-              disabled={disabled}
-              aria-label="Повторить действие"
-              title="Повторить действие"
-              onClick={() => editor.current?.undo(true)}
-            >
-              <Redo2 size={23} />
-            </button>
-          </div>
-          <div className="lesson-color-tools" role="toolbar" aria-label="Цвет и толщина">
-            {colors.map(([color, label]) => (
-              <button
-                className={`lesson-color ${tool.color === color ? 'active' : ''}`}
-                style={{ '--ink-color': color } as React.CSSProperties}
-                key={color}
-                aria-label={label}
-                title={label}
-                disabled={disabled}
-                onClick={() => editor.current?.setColor(color)}
-              />
-            ))}
-            <span />
-            {[1, 2, 4].map((width) => (
-              <button
-                className={`lesson-width ${tool.width === width ? 'active' : ''}`}
-                key={width}
-                aria-label={`Толщина ${width}`}
-                title={`Толщина ${width}`}
-                disabled={disabled}
-                onClick={() => editor.current?.setWidth(width)}
-              >
-                <i style={{ height: width + 1 }} />
-              </button>
-            ))}
-          </div>
-          {selected && (
-            <div className="lesson-document-pill">
-              <FileText size={16} />
-              {catalog.length > 1 ? (
-                <select
-                  aria-label="Выбрать презентацию"
-                  value={selected.id}
-                  onChange={(e) => setDeckId(e.target.value)}
-                >
-                  {catalog.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.title}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <span>{selected.title}</span>
-              )}
-              <select
-                aria-label="Перейти к слайду"
-                disabled={slidesDisabled}
-                value={selected.slideIndex}
-                onChange={(e) => void editor.current?.slide(selected.id, Number(e.target.value))}
-              >
-                {selected.slides.map((_, index) => (
-                  <option key={index} value={index}>
-                    Слайд {index + 1} из {selected.slides.length}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          <BoardTools
+            editor={editor}
+            tool={tool}
+            ready={ready && !archive}
+            upload={() => controls.current?.upload()}
+          />
           <div className="lesson-canvas-zoom">
             <button aria-label="Уменьшить масштаб" onClick={() => editor.current?.zoomBy(-0.1)}>
               <Minus size={17} />
@@ -643,43 +498,15 @@ export default function LessonWorkspace({
         </aside>
       </div>
       <footer className="lesson-room-footer">
-        <div className="lesson-slides">
-          {selected ? (
-            <>
-              {selected.slides.map((slide, index) => (
-                <button
-                  disabled={slidesDisabled}
-                  className={selected.slideIndex === index ? 'active' : ''}
-                  aria-label={`Слайд ${index + 1}`}
-                  key={`${slide.fileId}:${index}`}
-                  onClick={() => void editor.current?.slide(selected.id, index)}
-                >
-                  {slide.src ? (
-                    <img src={slide.src} loading="lazy" decoding="async" alt="" />
-                  ) : (
-                    <FileText size={22} />
-                  )}
-                  <span>{index + 1}</span>
-                </button>
-              ))}
-              <button
-                className="lesson-add-material"
-                disabled={disabled}
-                aria-label="Добавить материал"
-                onClick={() => controls.current?.upload()}
-              >
-                <Plus size={21} />
-              </button>
-            </>
-          ) : (
-            <div className="lesson-empty-materials">
-              <FileText size={22} />
-              <span>{archive ? 'Сохранённый общий холст' : 'Единый учебный холст'}</span>
-              {!disabled && (
-                <button onClick={() => controls.current?.upload()}>Добавить PDF</button>
-              )}
-            </div>
-          )}
+        <div className="lesson-slides lesson-material-info">
+          <FileText size={20} />
+          <span>
+            {archive
+              ? 'Материалы занятия'
+              : catalog.length
+                ? `На холсте: ${catalog.length} PDF`
+                : 'Единый учебный холст'}
+          </span>
         </div>
         <div className="lesson-call-controls">
           <button

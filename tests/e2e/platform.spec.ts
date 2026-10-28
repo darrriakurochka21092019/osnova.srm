@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { PDFDocument } from 'pdf-lib';
-import { loginTeacher } from './helpers';
+import { loginTeacher, selectPresentation } from './helpers';
 
 test('teacher and student complete a lesson, collaborate, recover offline edits, import PDF and submit work', async ({
   browser,
@@ -167,7 +167,8 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
     buffer: Buffer.from(await pdf.save()),
   });
   await expect(page.locator('.import-progress')).toBeHidden({ timeout: 30000 });
-  await expect(page.locator('.presentation-controls')).toHaveCount(1);
+  await selectPresentation(page, 'Физика');
+  await selectPresentation(page, 'Физика');
   await expect(page.locator('.slide-counter')).toHaveText('1 / 2');
   await expect(page.locator('.pages-sidebar')).toHaveCount(0);
   await expect(page.locator('.save-state')).toContainText('Сохранено');
@@ -217,6 +218,7 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
     })),
   });
   await page.reload();
+  await selectPresentation(page, 'Физика');
   await expect(page.locator('.slide-counter')).toHaveText('1 / 2');
   await expect.poll(async () => (await downloadScene()).elements.length).toBeGreaterThan(600);
   await page.evaluate(() => {
@@ -343,6 +345,7 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   await penEvent('mouseReleased', inkX - 20, inkY - 35);
   await expect(page.locator('.save-state')).toContainText('Нет связи');
   await page.reload();
+  await selectPresentation(page, 'Физика');
   await expect(page.locator('.slide-counter')).toHaveText('1 / 2');
   const recovered = await downloadScene();
   expect(
@@ -368,6 +371,7 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   const deckBefore = beforeMove.scene.find((e: any) => e.id === presentation.id);
   // Use the native selection tool to move the PDF, then check that its ink follows once.
   await page.keyboard.press('v');
+  await selectPresentation(page, 'Физика');
   const dragBox = await page.locator('.presentation-controls').boundingBox();
   await page.mouse.move(dragBox!.x + dragBox!.width / 2, dragBox!.y - 180);
   await page.mouse.down();
@@ -385,15 +389,19 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   const inkAfter = afterMove.scene.find((e: any) => e.id === inkBefore.id);
   expect(inkAfter.x - inkBefore.x).toBeCloseTo(deckAfter.x - deckBefore.x, 1);
   expect(inkAfter.y - inkBefore.y).toBeCloseTo(deckAfter.y - deckBefore.y, 1);
+  await selectPresentation(page, 'Физика');
   await page.getByRole('button', { name: 'Следующий слайд: Физика', exact: true }).click();
   await expect(page.locator('.slide-counter')).toHaveText('2 / 2');
   await expect(page.locator('.save-state')).toContainText('Сохранено');
   await guestPage.reload();
+  await selectPresentation(guestPage, 'Физика');
   await expect(guestPage.locator('.slide-counter')).toHaveText('2 / 2');
   await page.getByRole('button', { name: 'Предыдущий слайд: Физика', exact: true }).click();
+  await selectPresentation(page, 'Физика');
   await expect(page.locator('.slide-counter')).toHaveText('1 / 2');
   await expect(page.locator('.save-state')).toContainText('Сохранено');
   await page.reload();
+  await selectPresentation(page, 'Физика');
   await expect(page.locator('.slide-counter')).toHaveText('1 / 2');
   await expect(page.locator('.canvas-paper')).toHaveAttribute('data-background', 'grid');
   importedScene = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
@@ -414,7 +422,9 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   expect(exportedBytes.subarray(0, 5).toString()).toBe('%PDF-');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
+  await selectPresentation(page, 'Физика');
   await expect(page.locator('.slide-counter')).toHaveText('1 / 2');
+  await selectPresentation(page, 'Физика');
   await page.getByRole('button', { name: 'Следующий слайд: Физика', exact: true }).click();
   await expect(page.locator('.slide-counter')).toHaveText('2 / 2');
   await page.getByRole('button', { name: 'Фон', exact: true }).click();

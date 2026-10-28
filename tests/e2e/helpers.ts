@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext } from '@playwright/test';
+import { expect, type Page, type APIRequestContext } from '@playwright/test';
 
 export async function loginTeacher(request: APIRequestContext) {
   const bootstrap = await (await request.get('/api/v1/bootstrap')).json();
@@ -12,4 +12,20 @@ export async function loginTeacher(request: APIRequestContext) {
   });
   expect(response.ok(), await response.text()).toBeTruthy();
   await request.patch('/api/v1/me', { data: { settings: { onboardingComplete: true } } });
+}
+
+export async function selectPresentation(page: Page, title?: string) {
+  const handle = page
+    .getByRole('button', {
+      name: title ? `Выделить презентацию: ${title}` : /^Выделить презентацию:/,
+    })
+    .first();
+  await expect(handle).toBeAttached();
+  await handle.focus();
+  await handle.press('Enter');
+  await expect(page.locator('.presentation-controls')).toHaveCount(1);
+}
+export async function addNote(page: Page) {
+  await page.getByRole('button', { name: 'Стикеры', exact: true }).click();
+  await page.getByRole('button', { name: 'Добавить стикер', exact: true }).click();
 }

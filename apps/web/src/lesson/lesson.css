@@ -868,8 +868,9 @@
   position: relative;
   overflow: hidden;
 }
-.lesson-embedded {
+.board-room.lesson-embedded {
   height: 100%;
+  min-height: 0;
   background: #fff;
 }
 .lesson-embedded > .board-topbar,
@@ -888,7 +889,7 @@
   display: none !important;
 }
 .lesson-embedded .presentation-overlay {
-  display: none;
+  display: block;
 }
 .lesson-embedded > .background-picker {
   top: 12px;
@@ -2829,4 +2830,13 @@
     min-width: 0;
     max-width: calc(100% - 440px);
   }
+}
+
+.lesson-material-info {
+  font-size: 10px;
+  color: #8995b0;
+  padding: 12px 15px;
+  gap: 9px;
+  min-height: 50px;
+  height: auto;
 }

@@ -67,6 +67,10 @@ import type {
 
 import { backgrounds, backgroundStyle, paintBackground } from '../board/background';
 import { captureCanvas, snapshotCanvas } from '../board/canvas';
+import { decorateLine, figureParts, badgeParts } from '../board/geometry';
+import type { FigureSpec, LineKind } from '../board/catalog';
+import BoardTools from '../board/BoardTools';
+import '../board/tools.css';
 import {
   presentationOf,
   projectCanvas,
@@ -78,12 +82,31 @@ GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 (window as any).EXCALIDRAW_ASSET_PATH = '/excalidraw-assets/';
 
 export type SaveState = 'saved' | 'saving' | 'offline' | 'error';
+export type BoardSelection = {
+  ids: string[];
+  count: number;
+  textCount: number;
+  locked: boolean;
+  label: string;
+  fontFamily?: number;
+  fontSize?: number;
+  width?: number;
+  color?: string;
+  fill?: string;
+  text?: string;
+  figure?: FigureSpec;
+};
 export type BoardToolState = {
   type: string;
   color: string;
   width: number;
   zoom: number;
   readOnly: boolean;
+  fontFamily?: number;
+  fontSize?: number;
+  lineKind?: LineKind;
+  selection?: BoardSelection;
+  lockedCount?: number;
 };
 export type BoardPresentation = {
   id: string;
@@ -95,7 +118,6 @@ export type BoardControls = {
   upload: () => void;
   export: () => void;
   history: () => void;
-  files: () => void;
   background: () => void;
   isBusy: () => boolean;
 };
@@ -111,6 +133,17 @@ export type EditorHandle = {
   setTool: (type: string) => void;
   setColor: (color: string) => void;
   setWidth: (width: number) => void;
+  setTextStyle: (style: { fontFamily?: number; fontSize?: number; text?: string }) => void;
+  setFill: (color: string) => void;
+  setLineKind: (kind: LineKind) => void;
+  addFigure: (spec: FigureSpec) => void;
+  editFigure: (spec: FigureSpec) => void;
+  ungroup: () => void;
+  addSticker: (kind: string, color: string, text?: string) => void;
+  addFormula: (text: string, title?: string) => void;
+  lockSelection: () => void;
+  lockedObjects: () => { id: string; label: string }[];
+  selectObject: (id: string) => void;
   undo: (redo?: boolean) => void;
   zoomBy: (amount: number) => void;
   fit: () => void;
@@ -170,10 +203,17 @@ export default function BoardRoom(props: BoardRoomProps = {}) {
     [historyOpen, setHistoryOpen] = useState(false),
     [rename, setRename] = useState(false),
     [importStatus, setImportStatus] = useState(''),
-    [assets, setAssets] = useState<Asset[] | null>(null),
     [help, setHelp] = useState(false),
     [editorReady, setEditorReady] = useState(false),
     [peers, setPeers] = useState<{ id: string; name: string }[]>([]),
+    [toolsOpen, setToolsOpen] = useState(false),
+    [toolState, setToolState] = useState<BoardToolState>({
+      type: 'selection',
+      color: '#252846',
+      width: 2,
+      zoom: 1,
+      readOnly: false,
+    }),
     [conflict, setConflict] = useState<{ elements: any[]; files: any } | null>(null);
   const internalHandle = useRef<EditorHandle | null>(null),
     handle = props.editorRef || internalHandle,
@@ -188,13 +228,6 @@ export default function BoardRoom(props: BoardRoomProps = {}) {
       upload: () => fileInput.current?.click(),
       export: () => setExportOpen(true),
       history: () => setHistoryOpen(true),
-      files: async () => {
-        try {
-          setAssets(await api(`/boards/${id}/files`));
-        } catch (e) {
-          toast((e as Error).message);
-        }
-      },
       background: () => setBackgroundOpen((v) => !v),
       isBusy: () => importing.current,
     };
@@ -490,28 +523,28 @@ export default function BoardRoom(props: BoardRoomProps = {}) {
             <Grid2X2 size={16} />
             Фон
           </button>
-          <button
-            className="board-action"
-            onClick={async () => {
-              try {
-                setAssets(await api(`/boards/${board.id}/files`));
-              } catch (e) {
-                toast((e as Error).message);
-              }
-            }}
-          >
-            <Layers size={16} />
-            Файлы
-          </button>
           {user.role === 'teacher' && (
             <button className="board-action" onClick={() => setHistoryOpen(true)}>
               <History size={16} />
               История
             </button>
           )}
+          <button className="board-action" onClick={() => setToolsOpen((v) => !v)}>
+            Настройки инструментов
+          </button>
           <span className="board-participant-count">{peers.length + 1} на доске</span>
         </div>
       </div>
+      {!props.embedded && toolsOpen && (
+        <div className="legacy-board-tools">
+          <BoardTools
+            editor={handle}
+            tool={toolState}
+            ready={editorReady}
+            upload={() => fileInput.current?.click()}
+          />
+        </div>
+      )}
       {backgroundOpen && (
         <div className="background-picker" role="dialog" aria-label="Фон доски">
           <div className="background-picker-head">
@@ -606,7 +639,7 @@ export default function BoardRoom(props: BoardRoomProps = {}) {
               props.onReady?.();
             }}
             onBackground={(background) => setBoard((b) => (b ? { ...b, background } : b))}
-            onTools={props.onTools}
+            onTools={props.onTools || setToolState}
             onPresentations={props.onPresentations}
           />
         </div>
@@ -682,23 +715,6 @@ export default function BoardRoom(props: BoardRoomProps = {}) {
           </div>
         </Modal>
       )}
-      {assets && (
-        <Modal title="Исходные материалы доски" onClose={() => setAssets(null)}>
-          {assets
-            .filter((f) => !f.name.startsWith('pdf-page-'))
-            .map((f) => (
-              <a className="asset-row" key={f.id} href={fileUrl(f.id, true)}>
-                <FileText size={19} />
-                <span>
-                  {f.name}
-                  <small>{(f.size / 1024 / 1024).toFixed(1)} МБ</small>
-                </span>
-                <Download size={18} />
-              </a>
-            ))}
-          {!assets.length && <Empty title="Материалы ещё не загружены" />}
-        </Modal>
-      )}
       {help && (
         <Modal title="Общий холст для любого предмета" onClose={() => setHelp(false)}>
           <p>
@@ -706,9 +722,9 @@ export default function BoardRoom(props: BoardRoomProps = {}) {
             PDF-презентаций. Перемещайте объекты и меняйте их размер инструментом выделения.
           </p>
           <p>
-            Переключайте слайды кнопками под презентацией. Пометки внутри слайда сохраняются
-            отдельно для него и возвращаются при переходе назад. Изменение слайда видно всем
-            участникам с доступом к доске.
+            Выделите презентацию: кнопки переключения слайдов появятся прямо под ней. Пометки внутри
+            слайда сохраняются отдельно для него и возвращаются при переходе назад. Изменение слайда
+            видно всем участникам с доступом к доске.
           </p>
           <p>
             Выберите «Фон»: белый холст, клетка, линии или точки. Рисунок фона масштабируется вместе
@@ -824,8 +840,63 @@ function PageEditor({
     [decks, setDecks] = useState<any[]>([]),
     [switching, setSwitching] = useState(''),
     [previewing, setPreviewing] = useState(false),
-    [previewBackground, setPreviewBackground] = useState<BoardBackground | null>(null);
+    [previewBackground, setPreviewBackground] = useState<BoardBackground | null>(null),
+    [selectedDeck, setSelectedDeck] = useState('');
   const deckStamp = useRef('');
+  const selectionRef = useRef<BoardSelection>({
+      ids: [],
+      count: 0,
+      textCount: 0,
+      locked: false,
+      label: '',
+    }),
+    retainedSelection = useRef<string[]>([]),
+    selectedDeckRef = useRef(''),
+    lineKind = useRef<LineKind>('single'),
+    inkProfiles = useRef({
+      pen: { color: '#252846', width: 2 },
+      marker: { color: '#f0c348', width: 12 },
+    });
+  const publishSelection = (
+    elements: readonly any[],
+    state: ReturnType<ExcalidrawImperativeAPI['getAppState']>,
+  ) => {
+    const ids = Object.keys(state.selectedElementIds).filter((id) => state.selectedElementIds[id]);
+    const expanded = new Set(ids.length ? ids : retainedSelection.current);
+    for (const e of elements)
+      if (expanded.has(e.id))
+        for (const bound of e.boundElements || [])
+          if (bound.type === 'text') expanded.add(bound.id);
+    const chosen = elements.filter((e) => !e.isDeleted && expanded.has(e.id));
+    const text = chosen.find((e) => e.type === 'text'),
+      first = chosen.find((e) => e.type !== 'text') || chosen[0];
+    const figure = chosen.find((e) => e.customData?.boardFigure)?.customData?.boardFigure?.spec;
+    selectionRef.current = {
+      ids: chosen.map((e) => e.id),
+      count: chosen.length,
+      textCount: chosen.filter((e) => e.type === 'text').length,
+      locked: !!chosen.length && chosen.every((e) => e.locked),
+      label: (text?.text || 'Объект').slice(0, 80),
+      color:
+        first?.strokeColor === 'transparent'
+          ? text?.strokeColor || state.currentItemStrokeColor
+          : first?.strokeColor,
+      width: first?.strokeWidth,
+      fill: first?.backgroundColor,
+      fontFamily: text?.fontFamily,
+      fontSize: text?.fontSize,
+      ...(text && chosen.filter((e) => e.type === 'text').length === 1 && text.text.length <= 2000
+        ? { text: text.originalText || text.text }
+        : {}),
+      figure,
+    };
+    const deck = chosen.length === 1 && presentationOf(chosen[0]) ? chosen[0].id : '';
+    if (!readOnly && !previewScene.current && deck !== selectedDeckRef.current) {
+      selectedDeckRef.current = deck;
+      setSelectedDeck(deck);
+    }
+    return elements.filter((e) => !e.isDeleted && e.locked).length;
+  };
   const previewScene = useRef<any[] | null>(null),
     assetUrls = useRef(new Map<string, string>()),
     toolStamp = useRef('');
@@ -1003,9 +1074,51 @@ function PageEditor({
         void flush();
       }, 400);
   };
+  const reportTools = (
+    elements: readonly any[],
+    state: ReturnType<ExcalidrawImperativeAPI['getAppState']>,
+  ) => {
+    if (pointerDown.current) return;
+    const lockedCount = publishSelection(elements, state);
+    const nextTool: BoardToolState = {
+      type:
+        state.activeTool.type === 'freedraw'
+          ? state.currentItemOpacity < 100
+            ? 'marker'
+            : 'pen'
+          : state.activeTool.type,
+      color: state.currentItemStrokeColor,
+      width: selectionRef.current.width || state.currentItemStrokeWidth,
+      zoom: state.zoom.value,
+      readOnly: readOnly || !!previewScene.current,
+      fontFamily: selectionRef.current.fontFamily || state.currentItemFontFamily,
+      fontSize: selectionRef.current.fontSize || state.currentItemFontSize,
+      lineKind: lineKind.current,
+      selection: selectionRef.current,
+      lockedCount,
+    };
+    const stamp = JSON.stringify(nextTool);
+    if (stamp !== toolStamp.current) {
+      toolStamp.current = stamp;
+      onTools?.(nextTool);
+    }
+  };
   const captureRendered = (elements: readonly any[], before = current.current) => {
     nativeScene.current = { elements, version: elements.reduce((n, e) => n + e.version, 0) };
-    const captured = captureCanvas(elements, before);
+    const oldIds = new Set(before.map((e) => e.id));
+    const decorated = elements.flatMap((e) =>
+      dragStart.current &&
+      e.type === 'line' &&
+      !e.isDeleted &&
+      !oldIds.has(e.id) &&
+      !e.customData?.boardLine &&
+      !e.customData?.boardFigure
+        ? convertToExcalidrawElements(decorateLine(e, lineKind.current, `${e.id}-line`) as any, {
+            regenerateIds: false,
+          })
+        : [e],
+    );
+    const captured = captureCanvas(decorated, before);
     const next = new Map(captured.map((e) => [e.id, e]));
     const index = new Map(before.map((e) => [e.id, e]));
     for (const e of base.current.values())
@@ -1270,7 +1383,24 @@ function PageEditor({
       void flush();
     };
     initialFrame = requestAnimationFrame(initialize);
-    const stopPointerDown = editor.onPointerDown((tool) => {
+    const stopPointerDown = editor.onPointerDown((tool, pointer) => {
+      retainedSelection.current = [];
+      if (readOnly || previewScene.current) {
+        const scene = previewScene.current || current.current;
+        const hit = [...scene]
+          .reverse()
+          .find(
+            (e) =>
+              !e.isDeleted &&
+              presentationOf(e) &&
+              pointer.origin.x >= e.x &&
+              pointer.origin.x <= e.x + e.width &&
+              pointer.origin.y >= e.y &&
+              pointer.origin.y <= e.y + e.height,
+          );
+        selectedDeckRef.current = hit?.id || '';
+        setSelectedDeck(hit?.id || '');
+      }
       pointerDown.current = true;
       gestureEpoch.current++;
       if (!readOnly && tool.type === 'freedraw') onSave('saving');
@@ -1290,6 +1420,7 @@ function PageEditor({
             dragStart.current || current.current,
           );
         dragStart.current = null;
+        reportTools(editor.getSceneElementsIncludingDeleted(), editor.getAppState());
         releaseGestureWaiters();
         if (deferredRender.current) renderScene();
         const queued = remoteQueue.current.splice(0);
@@ -1425,13 +1556,71 @@ function PageEditor({
   };
   useEffect(() => {
     if (!editor) return;
-    const add = (skeletons: any[]) => {
-      const elements = convertToExcalidrawElements(skeletons);
+    const add = (skeletons: any[], select = false) => {
+      if (readOnly || previewScene.current) return [];
+      const elements = convertToExcalidrawElements(skeletons, { regenerateIds: false });
+      editor.setActiveTool({ type: 'selection' });
       editor.updateScene({
         elements: [...editor.getSceneElementsIncludingDeleted(), ...elements],
+        ...(select
+          ? {
+              appState: {
+                selectedElementIds: Object.fromEntries(elements.map((e) => [e.id, true])),
+              },
+            }
+          : {}),
         captureUpdate: CaptureUpdateAction.IMMEDIATELY,
       });
-      editor.scrollToContent(elements, { fitToContent: true });
+      editor.scrollToContent(elements, { fitToContent: true, viewportZoomFactor: 0.65 });
+      return elements;
+    };
+    const selected = () => {
+      const ids = new Set(selectionRef.current.ids);
+      return editor.getSceneElementsIncludingDeleted().filter((e) => !e.isDeleted && ids.has(e.id));
+    };
+    const modify = (patch: (e: any) => any) => {
+      if (readOnly || previewScene.current) return;
+      const ids = new Set(selectionRef.current.ids);
+      editor.updateScene({
+        elements: editor
+          .getSceneElementsIncludingDeleted()
+          .map((e) => (ids.has(e.id) && !e.locked ? patch(e) : e)),
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      });
+    };
+    const addFigure = (spec: FigureSpec, at?: { x: number; y: number }, oldParts: any[] = []) => {
+      if (readOnly || previewScene.current) return;
+      const origin = at || center(),
+        group = crypto.randomUUID();
+      const parts = figureParts(spec);
+      const minX = Math.min(...parts.map((e) => e.x)),
+        minY = Math.min(...parts.map((e) => e.y));
+      const elements = convertToExcalidrawElements(
+        parts.map((e, i) => ({
+          ...e,
+          id: crypto.randomUUID(),
+          x: origin.x + e.x - minX,
+          y: origin.y + e.y - minY,
+          strokeColor: selectionRef.current.color || editor.getAppState().currentItemStrokeColor,
+          strokeWidth: Math.min(editor.getAppState().currentItemStrokeWidth, 4),
+          groupIds: [group],
+          customData: { boardFigure: { id: group, spec, part: i } },
+        })),
+        { regenerateIds: false },
+      );
+      const oldIds = new Set(oldParts.map((e) => e.id));
+      editor.setActiveTool({ type: 'selection' });
+      editor.updateScene({
+        elements: [
+          ...editor
+            .getSceneElementsIncludingDeleted()
+            .map((e) => (oldIds.has(e.id) ? changedElement(e, { isDeleted: true }) : e)),
+          ...elements,
+        ],
+        appState: { selectedElementIds: Object.fromEntries(elements.map((e) => [e.id, true])) },
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      });
+      editor.scrollToContent(elements, { fitToContent: true, viewportZoomFactor: 0.65 });
     };
     const center = () => {
       const a = editor.getAppState();
@@ -1446,44 +1635,248 @@ function PageEditor({
       isSaved: () => !diff().length && !pendingOperation.current,
       setTool(type) {
         if (readOnly || previewScene.current) return;
-        const ink = type === 'pen' || type === 'marker';
-        const a = editor.getAppState();
+        const ink = type === 'pen' || type === 'marker',
+          profile = type === 'marker' ? inkProfiles.current.marker : inkProfiles.current.pen;
+        const previous = editor.getAppState();
         editor.updateScene({
           appState: {
             currentItemOpacity: type === 'marker' ? 30 : 100,
-            currentItemStrokeWidth:
-              type === 'marker'
-                ? 8
-                : type === 'pen' && a.currentItemOpacity < 100
-                  ? 2
-                  : a.currentItemStrokeWidth,
+            currentItemStrokeWidth: previous.currentItemStrokeWidth,
+            currentItemStrokeColor: previous.currentItemStrokeColor,
+            currentItemStrokeStyle: previous.currentItemStrokeStyle,
+            ...(ink
+              ? {
+                  currentItemStrokeWidth: profile.width,
+                  currentItemStrokeColor: profile.color,
+                  currentItemStrokeStyle: 'solid' as const,
+                }
+              : {}),
+            selectedElementIds: {},
           },
         });
+        retainedSelection.current = [];
         editor.setActiveTool({ type: (ink ? 'freedraw' : type) as any });
       },
       setColor(color) {
         if (!readOnly && !previewScene.current) {
-          const ids = editor.getAppState().selectedElementIds;
+          const state = editor.getAppState();
+          if (state.activeTool.type === 'freedraw')
+            inkProfiles.current[state.currentItemOpacity < 100 ? 'marker' : 'pen'].color = color;
+          const ids = Object.fromEntries(selectionRef.current.ids.map((id) => [id, true]));
           editor.updateScene({
             appState: { currentItemStrokeColor: color },
             elements: editor
               .getSceneElementsIncludingDeleted()
-              .map((e) => (ids[e.id] ? changedElement(e, { strokeColor: color }) : e)),
+              .map((e) => (ids[e.id] && !e.locked ? changedElement(e, { strokeColor: color }) : e)),
             captureUpdate: CaptureUpdateAction.IMMEDIATELY,
           });
         }
       },
       setWidth(width) {
         if (!readOnly && !previewScene.current) {
-          const ids = editor.getAppState().selectedElementIds;
+          width = Math.max(0.5, Math.min(40, width));
+          const state = editor.getAppState();
+          if (state.activeTool.type === 'freedraw')
+            inkProfiles.current[state.currentItemOpacity < 100 ? 'marker' : 'pen'].width = width;
+          const ids = Object.fromEntries(selectionRef.current.ids.map((id) => [id, true]));
           editor.updateScene({
             appState: { currentItemStrokeWidth: width },
             elements: editor
               .getSceneElementsIncludingDeleted()
-              .map((e) => (ids[e.id] ? changedElement(e, { strokeWidth: width }) : e)),
+              .map((e) => (ids[e.id] && !e.locked ? changedElement(e, { strokeWidth: width }) : e)),
             captureUpdate: CaptureUpdateAction.IMMEDIATELY,
           });
         }
+      },
+      setLineKind(kind) {
+        if (readOnly || previewScene.current) return;
+        lineKind.current = kind;
+        editor.setActiveTool({ type: 'line' });
+        editor.updateScene({
+          appState: {
+            currentItemOpacity: 100,
+            currentItemStrokeStyle:
+              kind === 'dashed' ? 'dashed' : kind === 'dotted' ? 'dotted' : 'solid',
+            selectedElementIds: {},
+          },
+        });
+      },
+      setTextStyle(style) {
+        if (readOnly || previewScene.current) return;
+        const app = editor.getAppState(),
+          family = style.fontFamily || app.currentItemFontFamily,
+          size = Math.max(8, Math.min(200, style.fontSize || app.currentItemFontSize));
+        const changes = new Map<string, any>();
+        for (const e of selected()) {
+          if (e.type !== 'text' || e.locked) continue;
+          const fontFamily = style.fontFamily || e.fontFamily,
+            fontSize = style.fontSize || e.fontSize,
+            text = style.text ?? e.originalText ?? e.text;
+          const measured = convertToExcalidrawElements([
+            { type: 'text', x: e.x, y: e.y, text, fontFamily, fontSize },
+          ] as any)[0] as any;
+          changes.set(
+            e.id,
+            changedElement(e, {
+              text: measured.text,
+              originalText: text,
+              fontFamily,
+              fontSize,
+              lineHeight: measured.lineHeight,
+              width: measured.width,
+              height: measured.height,
+              autoResize: true,
+            }),
+          );
+          if (e.containerId) {
+            const parent = editor.getSceneElements().find((p) => p.id === e.containerId);
+            if (parent && !parent.locked) {
+              const container = convertToExcalidrawElements(
+                [
+                  {
+                    ...parent,
+                    label: { id: e.id, text, fontFamily, fontSize, strokeColor: e.strokeColor },
+                  },
+                ] as any,
+                { regenerateIds: false },
+              );
+              for (const part of container) {
+                const old = editor.getSceneElements().find((p) => p.id === part.id);
+                if (old)
+                  changes.set(
+                    part.id,
+                    changedElement(old, {
+                      ...part,
+                      customData: old.customData,
+                      version: old.version + 1,
+                    }),
+                  );
+              }
+            }
+          }
+        }
+        editor.updateScene({
+          elements: editor.getSceneElementsIncludingDeleted().map((e) => changes.get(e.id) || e),
+          appState: { currentItemFontFamily: family, currentItemFontSize: size },
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        });
+      },
+      setFill(color) {
+        modify((e) => changedElement(e, { backgroundColor: color, fillStyle: 'solid' }));
+      },
+      addFigure,
+      editFigure(spec) {
+        const chosen = selected(),
+          group = chosen.find((e) => e.customData?.boardFigure)?.customData?.boardFigure as any;
+        if (!group || chosen.some((e) => e.locked)) return;
+        const parts = editor
+            .getSceneElements()
+            .filter((e) => (e.customData?.boardFigure as any)?.id === group.id),
+          [x, y] = getCommonBounds(parts);
+        addFigure(spec, { x, y }, parts);
+      },
+      ungroup() {
+        modify((e) =>
+          changedElement(e, {
+            groupIds: [],
+            customData: { ...e.customData, boardFigure: undefined },
+          }),
+        );
+      },
+      addSticker(kind, color, text = 'Новая заметка') {
+        const { x, y } = center(),
+          group = crypto.randomUUID();
+        const parts =
+          kind === 'note'
+            ? [
+                {
+                  type: 'rectangle',
+                  x: 0,
+                  y: 0,
+                  width: 240,
+                  height: 180,
+                  backgroundColor: color,
+                  fillStyle: 'solid',
+                  strokeColor: 'transparent',
+                  roughness: 0,
+                  roundness: { type: 3 },
+                  customData: { sticker: { kind: 'note' } },
+                  label: { text, fontFamily: 5, fontSize: 24, strokeColor: '#252846' },
+                },
+              ]
+            : badgeParts(kind, color);
+        add(
+          parts.map((e) => ({
+            ...e,
+            id: crypto.randomUUID(),
+            x: x + e.x,
+            y: y + e.y,
+            groupIds: kind === 'note' ? [] : [group],
+          })),
+          true,
+        );
+      },
+      addFormula(text, title = 'Формула') {
+        const { x, y } = center();
+        add(
+          [
+            {
+              id: crypto.randomUUID(),
+              type: 'text',
+              x,
+              y,
+              text,
+              fontFamily: 2,
+              fontSize: 32,
+              strokeColor: editor.getAppState().currentItemStrokeColor,
+              roughness: 0,
+              customData: { formula: { title } },
+            },
+          ],
+          true,
+        );
+      },
+      lockSelection() {
+        if (readOnly || previewScene.current) return;
+        const chosen = selected(),
+          ids = new Set(chosen.map((e) => e.id));
+        for (const e of chosen) {
+          if (e.type === 'text' && e.containerId) ids.add(e.containerId);
+          for (const b of e.boundElements || []) if (b.type === 'text') ids.add(b.id);
+        }
+        const unlock = chosen.length > 0 && chosen.every((e) => e.locked);
+        retainedSelection.current = [...ids];
+        editor.updateScene({
+          elements: editor
+            .getSceneElementsIncludingDeleted()
+            .map((e) => (ids.has(e.id) ? changedElement(e, { locked: !unlock }) : e)),
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        });
+      },
+      lockedObjects() {
+        return editor
+          .getSceneElements()
+          .filter((e) => e.locked && !(e.type === 'text' && e.containerId))
+          .map((e) => ({
+            id: e.id,
+            label: (
+              (e as any).text ||
+              (e.customData?.boardFigure as any)?.spec?.kind ||
+              'Объект'
+            ).slice(0, 80),
+          }));
+      },
+      selectObject(id) {
+        const e = editor.getSceneElements().find((e) => e.id === id);
+        if (!e) return;
+        retainedSelection.current = [id];
+        editor.setActiveTool({ type: 'selection' });
+        editor.updateScene({ appState: { selectedElementIds: { [id]: true } } });
+        if (presentationOf(e)) {
+          selectedDeckRef.current = id;
+          setSelectedDeck(id);
+        }
+        editor.scrollToContent([e], { fitToContent: true, viewportZoomFactor: 0.6 });
       },
       undo(redo = false) {
         if (readOnly || previewScene.current) return;
@@ -1534,6 +1927,8 @@ function PageEditor({
         }
         previewScene.current = scene;
         setPreviewing(!!scene);
+        selectedDeckRef.current = '';
+        setSelectedDeck('');
         setPreviewBackground(scene ? background || null : null);
         deckStamp.current = '';
         const shown = scene || current.current;
@@ -1560,6 +1955,7 @@ function PageEditor({
         };
       },
       addMedia(elements, files) {
+        editor.setActiveTool({ type: 'selection' });
         editor.addFiles(files);
         for (const f of files) {
           fileData.current[f.id as keyof BinaryFiles] = f;
@@ -1570,6 +1966,11 @@ function PageEditor({
             knownFiles.current.add(slide.fileId);
         editor.updateScene({
           elements: [...editor.getSceneElementsIncludingDeleted(), ...elements],
+          appState: {
+            selectedElementIds: Object.fromEntries(
+              elements.filter((e) => e.type === 'image').map((e) => [e.id, true]),
+            ),
+          },
           captureUpdate: CaptureUpdateAction.IMMEDIATELY,
         });
         editor.scrollToContent(elements, { fitToContent: true, viewportZoomFactor: 0.75 });
@@ -1578,16 +1979,17 @@ function PageEditor({
           .catch((e) => toast(e.message));
       },
       setPen(highlight) {
-        editor.updateScene({
-          appState: {
-            currentItemOpacity: highlight ? 30 : 100,
-            currentItemStrokeWidth: highlight ? 8 : 2,
-            currentItemStrokeColor: highlight ? '#f0c348' : '#252846',
-          },
-        });
-        editor.setActiveTool({ type: 'freedraw' });
+        handleRef.current?.setTool(highlight ? 'marker' : 'pen');
       },
       addTemplate(kind) {
+        if (kind === 'note') {
+          handleRef.current?.addSticker(
+            'note',
+            '#fff0a8',
+            'Заметка\n\nИдея, вопрос или важный вывод.',
+          );
+          return;
+        }
         const { x, y } = center();
         const text =
           kind === 'note'
@@ -1737,23 +2139,7 @@ function PageEditor({
             width: state.width,
             height: state.height,
           });
-          const nextTool: BoardToolState = {
-            type:
-              state.activeTool.type === 'freedraw'
-                ? state.currentItemOpacity < 100
-                  ? 'marker'
-                  : 'pen'
-                : state.activeTool.type,
-            color: state.currentItemStrokeColor,
-            width: state.currentItemStrokeWidth,
-            zoom: state.zoom.value,
-            readOnly: readOnly || !!previewScene.current,
-          };
-          const stamp = JSON.stringify(nextTool);
-          if (stamp !== toolStamp.current) {
-            toolStamp.current = stamp;
-            onTools?.(nextTool);
-          }
+          reportTools(elements, state);
           if (!ready.current) return;
           if (state.gridModeEnabled) editor?.updateScene({ appState: { gridModeEnabled: false } });
           fileData.current = files;
@@ -1799,79 +2185,112 @@ function PageEditor({
       </Excalidraw>
       <div className="presentation-overlay">
         {decks.map((deck) => {
-          const p = presentationOf(deck)!,
-            x = (deck.x + view.scrollX) * view.zoom,
+          const x = (deck.x + view.scrollX) * view.zoom,
             y = (deck.y + view.scrollY) * view.zoom,
-            w = deck.width * view.zoom,
-            h = deck.height * view.zoom;
-          if (x + w < 0 || y + h < 50 || x > view.width || y > view.height || w < 40) return null;
-          const width = Math.min(Math.max(w, 270), 480);
+            w = deck.width * view.zoom;
+          if (x + w < 0 || x > view.width || y > view.height) return null;
           return (
-            <div
-              className="presentation-controls"
+            <button
+              className="presentation-select"
               key={deck.id}
-              data-presentation-id={deck.id}
-              data-slide-index={p.slideIndex}
               style={{
-                left: Math.max(8, Math.min(x + (w - width) / 2, view.width - width - 8)),
-                top: Math.min(y + h + 8, view.height - 72),
-                width: Math.min(width, view.width - 16),
+                pointerEvents:
+                  readOnly || previewing || editor?.getAppState().activeTool.type === 'selection'
+                    ? 'auto'
+                    : 'none',
+                left: Math.max(65, Math.min(x + 8, view.width - 120)),
+                top: Math.max(70, y + 8),
               }}
+              aria-label={`Выделить презентацию: ${presentationOf(deck)!.title}`}
+              onClick={() => handleRef.current?.selectObject(deck.id)}
             >
-              <div className="presentation-title">
-                <FileText size={14} />
-                <strong title={p.title}>{p.title}</strong>
-                <button
-                  className="icon-btn"
-                  aria-label={`Показать крупно: ${p.title}`}
-                  onClick={() =>
-                    editor?.scrollToContent([deck], {
-                      fitToContent: true,
-                      viewportZoomFactor: 0.75,
-                    })
-                  }
-                >
-                  <Maximize2 size={15} />
-                </button>
-              </div>
-              <div className="presentation-navigation">
-                <button
-                  className="icon-btn"
-                  aria-label={`Предыдущий слайд: ${p.title}`}
-                  disabled={readOnly || !!switching || p.slideIndex === 0}
-                  onClick={() => changeSlide(deck.id, p.slideIndex - 1)}
-                >
-                  <ChevronLeft size={18} />
-                </button>
-                <label>
-                  <span className="sr-only">Слайд презентации {p.title}</span>
-                  <select
-                    value={p.slideIndex}
-                    disabled={readOnly || !!switching}
-                    onChange={(e) => changeSlide(deck.id, Number(e.target.value))}
-                  >
-                    {p.slides.map((_, i) => (
-                      <option key={i} value={i}>
-                        Слайд {i + 1}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <span className="slide-counter">
-                  {p.slideIndex + 1} / {p.slides.length}
-                </span>
-                <button
-                  className="icon-btn"
-                  aria-label={`Следующий слайд: ${p.title}`}
-                  disabled={readOnly || !!switching || p.slideIndex === p.slides.length - 1}
-                  onClick={() => changeSlide(deck.id, p.slideIndex + 1)}
-                >
-                  <ChevronRight size={18} />
-                </button>
-              </div>
-            </div>
+              <FileText size={15} />
+              <span>{presentationOf(deck)!.title}</span>
+            </button>
           );
         })}
+        {decks
+          .filter((deck) => deck.id === selectedDeck)
+          .map((deck) => {
+            const p = presentationOf(deck)!,
+              x = (deck.x + view.scrollX) * view.zoom,
+              y = (deck.y + view.scrollY) * view.zoom,
+              w = deck.width * view.zoom,
+              h = deck.height * view.zoom;
+            if (x + w < 0 || y + h < 50 || x > view.width || y > view.height || w < 40) return null;
+            const width = Math.min(Math.max(w, 270), 480);
+            return (
+              <div
+                className="presentation-controls"
+                key={deck.id}
+                data-presentation-id={deck.id}
+                data-slide-index={p.slideIndex}
+                style={{
+                  left: Math.max(8, Math.min(x + (w - width) / 2, view.width - width - 8)),
+                  top: Math.min(y + h + 8, view.height - 72),
+                  width: Math.min(width, view.width - 16),
+                }}
+              >
+                <div className="presentation-title">
+                  <FileText size={14} />
+                  <strong title={p.title}>{p.title}</strong>
+                  <button
+                    className="icon-btn"
+                    aria-label={`Показать крупно: ${p.title}`}
+                    onClick={() =>
+                      editor?.scrollToContent([deck], {
+                        fitToContent: true,
+                        viewportZoomFactor: 0.75,
+                      })
+                    }
+                  >
+                    <Maximize2 size={15} />
+                  </button>
+                </div>
+                <div className="presentation-navigation">
+                  <button
+                    className="icon-btn"
+                    aria-label={`Предыдущий слайд: ${p.title}`}
+                    disabled={
+                      (readOnly && !previewScene.current) || !!switching || p.slideIndex === 0
+                    }
+                    onClick={() => changeSlide(deck.id, p.slideIndex - 1)}
+                  >
+                    <ChevronLeft size={18} />
+                  </button>
+                  <label>
+                    <span className="sr-only">Слайд презентации {p.title}</span>
+                    <select
+                      value={p.slideIndex}
+                      disabled={(readOnly && !previewScene.current) || !!switching}
+                      onChange={(e) => changeSlide(deck.id, Number(e.target.value))}
+                    >
+                      {p.slides.map((_, i) => (
+                        <option key={i} value={i}>
+                          Слайд {i + 1}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <span className="slide-counter">
+                    {p.slideIndex + 1} / {p.slides.length}
+                  </span>
+                  <button
+                    className="icon-btn"
+                    aria-label={`Следующий слайд: ${p.title}`}
+                    disabled={
+                      (readOnly && !previewScene.current) ||
+                      !!switching ||
+                      p.slideIndex === p.slides.length - 1
+                    }
+                    onClick={() => changeSlide(deck.id, p.slideIndex + 1)}
+                  >
+                    <ChevronRight size={18} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
       </div>
     </>
   );
