@@ -17,6 +17,20 @@ async function draw(page: Page, x: number, y: number, dx = 150, dy = 0) {
   await page.mouse.up();
 }
 
+async function scenePoint(page: Page, x: number, y: number) {
+  return page.locator('.canvas-paper').evaluate(
+    (el, point) => {
+      const node = el as HTMLElement,
+        box = node.getBoundingClientRect();
+      const zoom =
+        parseFloat(node.style.backgroundSize) / (node.dataset.background === 'ruled' ? 32 : 24);
+      const [px, py] = node.style.backgroundPosition.split(' ').map(parseFloat);
+      return { x: box.x + point.x * zoom + px, y: box.y + point.y * zoom + py };
+    },
+    { x, y },
+  );
+}
+
 test('custom ink, native 3D figures, subject lines, editable stickers and formulas persist with locks and undo', async ({
   browser,
   request,
@@ -46,6 +60,10 @@ test('custom ink, native 3D figures, subject lines, editable stickers and formul
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(`/lesson/${room.id}/prepare`);
   await expect(page.getByRole('button', { name: 'Ручка', exact: true })).toBeEnabled();
+  await expect(page.locator('.lesson-room-footer')).toHaveCSS('background-image', 'none');
+  await expect(page.getByRole('button', { name: 'Закреплённые объекты', exact: true })).toHaveCount(
+    0,
+  );
   const area = (await page.locator('.lesson-board-area').boundingBox())!;
   await page.getByRole('button', { name: 'Ручка', exact: true }).click();
   await page.getByLabel('Цвет HEX', { exact: true }).fill('#cf3a7a');
@@ -99,10 +117,17 @@ test('custom ink, native 3D figures, subject lines, editable stickers and formul
     .toBe(2);
   await page.getByRole('button', { name: 'Фигуры', exact: true }).click();
   await page.getByRole('button', { name: 'Объёмные', exact: true }).click();
-  await page.getByRole('button', { name: 'Фигура: Куб', exact: true }).click();
-  await page.getByLabel('Ширина фигуры', { exact: true }).fill('220');
+  await expect(page.getByLabel('Ширина фигуры', { exact: true })).toHaveCount(0);
   await page.screenshot({ path: info.outputPath('figures-panel-desktop.png') });
-  await page.getByRole('button', { name: 'Добавить фигуру', exact: true }).click();
+  await page.getByRole('button', { name: 'Фигура: Куб', exact: true }).click();
+  await expect(page.locator('.board-tool-panel')).toHaveCount(0);
+  const figureCount = (await scene()).filter((e) => !e.isDeleted).length;
+  await page.mouse.move(area.x + 460, area.y + 260);
+  await page.mouse.down();
+  await page.mouse.move(area.x + 680, area.y + 440, { steps: 12 });
+  await expect(page.locator('.board-drawing-preview')).toBeVisible();
+  expect((await scene()).filter((e) => !e.isDeleted)).toHaveLength(figureCount);
+  await page.mouse.up();
   await expect
     .poll(
       async () =>
@@ -113,35 +138,76 @@ test('custom ink, native 3D figures, subject lines, editable stickers and formul
     .toBe(9);
   const originalCube = (await scene()).filter((e) => e.customData?.boardFigure && !e.isDeleted);
   expect(originalCube.every((e) => ['line', 'rectangle'].includes(e.type))).toBeTruthy();
-  await page.getByRole('button', { name: 'Параметры фигуры', exact: true }).click();
-  await page.getByLabel('Ширина фигуры', { exact: true }).fill('300');
-  await page.getByRole('button', { name: 'Применить к выделенной фигуре', exact: true }).click();
+  const front = originalCube.find((e) => e.type === 'rectangle')!;
+  await expect(
+    page.getByRole('button', { name: 'Закрепить выделенное', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Параметры фигуры', exact: true })).toHaveCount(0);
+  // Resize the group's native corner handle, without a numerical settings panel.
+  await draw(page, area.x + 688, area.y + 448, 80, 50);
   await expect
-    .poll(
-      async () =>
-        (await scene()).find(
-          (e) => e.type === 'rectangle' && e.customData?.boardFigure && !e.isDeleted,
-        )?.width,
-    )
-    .toBe(300);
+    .poll(async () => (await scene()).find((e) => e.id === front.id)?.width)
+    .toBeGreaterThan(front.width);
+  const resized = (await scene()).find((e) => e.id === front.id)!;
   await page.getByRole('button', { name: 'Отменить действие', exact: true }).click();
   await expect
-    .poll(
-      async () =>
-        (await scene()).find(
-          (e) => e.type === 'rectangle' && e.customData?.boardFigure && !e.isDeleted,
-        )?.width,
-    )
-    .toBe(220);
+    .poll(async () => (await scene()).find((e) => e.id === front.id)?.width)
+    .toBeCloseTo(front.width, 1);
   await page.getByRole('button', { name: 'Повторить действие', exact: true }).click();
+  await expect
+    .poll(async () => (await scene()).find((e) => e.id === front.id)?.width)
+    .toBeCloseTo(resized.width, 1);
+  await page.getByRole('button', { name: 'Закрепить выделенное', exact: true }).click();
   await expect
     .poll(
       async () =>
-        (await scene()).find(
-          (e) => e.type === 'rectangle' && e.customData?.boardFigure && !e.isDeleted,
-        )?.width,
+        (await scene()).filter((e) => e.customData?.boardFigure && e.locked && !e.isDeleted).length,
     )
-    .toBe(300);
+    .toBe(9);
+  await page.mouse.click(area.x + 180, area.y + area.height - 120);
+  await expect(page.getByRole('toolbar', { name: 'Выделенный объект' })).toHaveCount(0);
+  let hit = await scenePoint(page, resized.x, resized.y + resized.height / 2);
+  await page.mouse.click(hit.x, hit.y);
+  await expect(
+    page.getByRole('button', { name: 'Открепить выделенное', exact: true }),
+  ).toBeVisible();
+  await draw(page, hit.x, hit.y, 60, 30);
+  expect((await scene()).find((e) => e.id === front.id)?.x).toBe(resized.x);
+  await page.getByRole('button', { name: 'Открепить выделенное', exact: true }).click();
+  await expect
+    .poll(
+      async () =>
+        (await scene()).filter((e) => e.customData?.boardFigure && e.locked && !e.isDeleted).length,
+    )
+    .toBe(0);
+  // Right-button drag pans at the current zoom and never moves or creates objects.
+  await page.getByRole('button', { name: 'Ручка', exact: true }).click();
+  await page.getByRole('button', { name: 'Увеличить масштаб', exact: true }).click();
+  await page.getByRole('button', { name: 'Увеличить масштаб', exact: true }).click();
+  const beforePan = await scenePoint(page, resized.x, resized.y);
+  await page.mouse.move(area.x + 800, area.y + 350);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(area.x + 890, area.y + 405, { steps: 12 });
+  await page.mouse.up({ button: 'right' });
+  const afterPan = await scenePoint(page, resized.x, resized.y);
+  expect(afterPan.x - beforePan.x).toBeCloseTo(90, 1);
+  expect(afterPan.y - beforePan.y).toBeCloseTo(55, 1);
+  expect((await scene()).find((e) => e.id === front.id)?.x).toBe(resized.x);
+  expect((await scene()).filter((e) => e.type === 'freedraw' && !e.isDeleted)).toHaveLength(2);
+  await expect(page.locator('.context-menu')).toHaveCount(0);
+  await expect(page.locator('.board-surface')).not.toHaveClass(/is-panning/);
+  await expect(page.getByRole('button', { name: 'Ручка', exact: true })).toHaveClass(/active/);
+  await page.getByRole('button', { name: 'Фигуры', exact: true }).click();
+  await page.getByRole('button', { name: 'Фигура: Конус', exact: true }).click();
+  await page.mouse.move(area.x + 700, area.y + 500);
+  await page.mouse.down();
+  await page.mouse.move(area.x + 800, area.y + 600);
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  await expect(page.locator('.board-drawing-preview')).toHaveCount(0);
+  expect(
+    (await scene()).some((e) => e.customData?.boardFigure?.spec?.kind === 'cone' && !e.isDeleted),
+  ).toBe(false);
   await page.getByRole('button', { name: 'Стикеры', exact: true }).click();
   await page.getByRole('button', { name: 'Мятный стикер', exact: true }).click();
   await page.getByLabel('Текст стикера', { exact: true }).fill('Условие\nНайдите площадь');
@@ -160,7 +226,18 @@ test('custom ink, native 3D figures, subject lines, editable stickers and formul
         e.originalText === 'Условие\nНайдите площадь',
     ),
   ).toBeTruthy();
-  await page.getByLabel('Шрифт текста', { exact: true }).selectOption('2');
+  await expect(page.getByLabel('Шрифт текста', { exact: true }).locator('option')).toHaveCount(5);
+  for (const font of ['6', '3', '1', '2']) {
+    await page.getByLabel('Шрифт текста', { exact: true }).selectOption(font);
+    await expect
+      .poll(
+        async () =>
+          (await scene()).find((e) => e.type === 'text' && e.containerId === note.id)?.fontFamily,
+      )
+      .toBe(Number(font));
+    await page.evaluate(() => document.fonts.ready);
+    await page.screenshot({ path: info.outputPath(`note-font-${font}.png`) });
+  }
   await page.getByLabel('Размер текста', { exact: true }).selectOption('28');
   await expect
     .poll(
@@ -222,8 +299,13 @@ test('custom ink, native 3D figures, subject lines, editable stickers and formul
   await page.screenshot({ path: info.outputPath('locked-text-desktop.png') });
   await draw(page, area.x + area.width / 2, area.y + area.height / 2, 70, 30);
   expect((await scene()).find((e) => e.id === formula.id)?.x).toBe(formula.x);
-  await page.getByRole('button', { name: 'Закреплённые объекты', exact: true }).click();
-  await page.locator('.board-locked-objects button').first().click();
+  await page.mouse.click(area.x + 180, area.y + area.height - 120);
+  await expect(page.getByRole('toolbar', { name: 'Выделенный объект' })).toHaveCount(0);
+  hit = await scenePoint(page, formula.x + formula.width / 2, formula.y + formula.height / 2);
+  await page.mouse.click(hit.x, hit.y);
+  await expect(
+    page.getByRole('button', { name: 'Открепить выделенное', exact: true }),
+  ).toBeVisible();
   await page.getByRole('button', { name: 'Открепить выделенное', exact: true }).click();
   await expect
     .poll(async () => (await scene()).find((e) => e.id === formula.id)?.locked)
@@ -284,6 +366,26 @@ test('PDF controls belong to the selected object, also in saved lessons and mobi
   });
   await selectPresentation(page, 'Оптика');
   await expect(page.locator('.lesson-slides button,.lesson-document-pill')).toHaveCount(0);
+  const board = await (await request.get(`/api/v1/boards/${room.board_id}`)).json();
+  const scene = async () =>
+    (await (await request.get(`/api/v1/pages/${board.canvas_page_id}/snapshot`)).json())
+      .scene as any[];
+  await expect
+    .poll(async () => (await scene()).some((e) => e.customData?.presentation && !e.isDeleted))
+    .toBe(true);
+  const image = (await scene()).find((e) => e.customData?.presentation && !e.isDeleted)!;
+  await page.getByRole('button', { name: 'Закрепить выделенное', exact: true }).click();
+  await expect.poll(async () => (await scene()).find((e) => e.id === image.id)?.locked).toBe(true);
+  const area = (await page.locator('.lesson-board-area').boundingBox())!;
+  await page.mouse.click(area.x + 180, area.y + area.height - 120);
+  await expect(page.getByRole('toolbar', { name: 'Выделенный объект' })).toHaveCount(0);
+  const hit = await scenePoint(page, image.x + image.width / 2, image.y + image.height / 2);
+  await page.mouse.click(hit.x, hit.y);
+  await expect(
+    page.getByRole('button', { name: 'Открепить выделенное', exact: true }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Открепить выделенное', exact: true }).click();
+  await expect.poll(async () => (await scene()).find((e) => e.id === image.id)?.locked).toBe(false);
   await page.getByRole('button', { name: 'Следующий слайд: Оптика', exact: true }).click();
   await expect(page.getByLabel('Слайд презентации Оптика')).toHaveValue('1');
   await page.getByRole('button', { name: 'Ручка', exact: true }).click();

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import {
   ArrowUpRight,
-  Box,
   ChevronDown,
   Eraser,
   Hand,
@@ -32,11 +31,19 @@ import {
   lineKinds,
   mathSymbols,
   noteColors,
-  type FigureSpec,
+  type FigureKind,
 } from './catalog';
 import { figureParts, lineParts } from './geometry';
 
-function VectorPreview({ parts }: { parts: any[] }) {
+export function VectorPreview({
+  parts,
+  padding = 10,
+  strokeWidth = 2,
+}: {
+  parts: any[];
+  padding?: number;
+  strokeWidth?: number;
+}) {
   const points = parts.flatMap((p) => [
     [p.x, p.y],
     [p.x + (p.width || 0), p.y + (p.height || 0)],
@@ -47,7 +54,7 @@ function VectorPreview({ parts }: { parts: any[] }) {
     h = Math.max(...points.map((p) => p[1])) - y || 1;
   return (
     <svg
-      viewBox={`${x - 10} ${y - 10} ${w + 20} ${h + 20}`}
+      viewBox={`${x - padding} ${y - padding} ${w + padding * 2} ${h + padding * 2}`}
       aria-hidden="true"
       preserveAspectRatio="xMidYMid meet"
     >
@@ -61,7 +68,7 @@ function VectorPreview({ parts }: { parts: any[] }) {
             ry={p.height / 2}
             fill="none"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth={strokeWidth}
             vectorEffect="non-scaling-stroke"
             strokeDasharray={p.strokeStyle === 'dashed' ? '5 4' : undefined}
           />
@@ -72,7 +79,7 @@ function VectorPreview({ parts }: { parts: any[] }) {
               points={`${p.x + p.width / 2},${p.y} ${p.x + p.width},${p.y + p.height / 2} ${p.x + p.width / 2},${p.y + p.height} ${p.x},${p.y + p.height / 2}`}
               fill="none"
               stroke="currentColor"
-              strokeWidth="2"
+              strokeWidth={strokeWidth}
               vectorEffect="non-scaling-stroke"
             />
           ) : (
@@ -84,7 +91,7 @@ function VectorPreview({ parts }: { parts: any[] }) {
               height={p.height}
               fill="none"
               stroke="currentColor"
-              strokeWidth="2"
+              strokeWidth={strokeWidth}
               vectorEffect="non-scaling-stroke"
             />
           )
@@ -94,7 +101,7 @@ function VectorPreview({ parts }: { parts: any[] }) {
             points={p.points?.map(([px, py]: number[]) => `${p.x + px},${p.y + py}`).join(' ')}
             fill="none"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth={strokeWidth}
             vectorEffect="non-scaling-stroke"
             strokeDasharray={
               p.strokeStyle === 'dashed' ? '6 4' : p.strokeStyle === 'dotted' ? '1 4' : undefined
@@ -105,8 +112,7 @@ function VectorPreview({ parts }: { parts: any[] }) {
     </svg>
   );
 }
-const defaults: FigureSpec = { kind: 'rectangle', width: 180, height: 160, depth: 65 };
-type Panel = 'shapes' | 'lines' | 'stickers' | 'formulas' | 'text' | 'locked' | null;
+type Panel = 'shapes' | 'lines' | 'stickers' | 'formulas' | 'text' | null;
 export default function BoardTools({
   editor,
   tool,
@@ -120,7 +126,7 @@ export default function BoardTools({
 }) {
   const [panel, setPanel] = useState<Panel>(null),
     [space, setSpace] = useState(false),
-    [spec, setSpec] = useState<FigureSpec>(defaults),
+    [figure, setFigure] = useState<FigureKind>('rectangle'),
     [noteColor, setNoteColor] = useState<string>(noteColors[0][0]),
     [noteText, setNoteText] = useState('Новая заметка'),
     [subject, setSubject] = useState<string>('Математика'),
@@ -140,12 +146,6 @@ export default function BoardTools({
   useEffect(() => {
     setText(selection?.text || '');
   }, [selection?.ids.join('|'), selection?.text]);
-  useEffect(() => {
-    if (selection?.figure) {
-      setSpec(selection.figure);
-      setSpace(!!figures.find((f) => f.id === selection.figure!.kind)?.space);
-    }
-  }, [JSON.stringify(selection?.figure)]);
   useEffect(() => {
     if (!panel) return;
     const key = (e: KeyboardEvent) => {
@@ -205,7 +205,6 @@ export default function BoardTools({
     setHex(color);
     if (/^#[\da-f]{6}$/i.test(color)) editor.current?.setColor(color);
   };
-  const lockedItems = panel === 'locked' ? editor.current?.lockedObjects() || [] : [];
   return (
     <>
       <div className="lesson-drawing-tools" role="toolbar" aria-label="Инструменты доски">
@@ -230,7 +229,13 @@ export default function BoardTools({
           },
           panel === 'text' || tool.type === 'text',
         )}
-        {button('shapes', 'Фигуры', Shapes, () => choose('shapes'), panel === 'shapes')}
+        {button(
+          'shapes',
+          'Фигуры',
+          Shapes,
+          () => choose('shapes'),
+          panel === 'shapes' || tool.type === 'figure',
+        )}
         {button(
           'lines',
           'Линии',
@@ -300,17 +305,6 @@ export default function BoardTools({
           />
           <output>{tool.width}</output>
         </label>
-        <button
-          className="board-locked-list"
-          type="button"
-          title="Закреплённые объекты"
-          aria-label="Закреплённые объекты"
-          disabled={disabled}
-          onClick={() => choose('locked')}
-        >
-          <LockKeyhole size={17} />
-          {!!tool.lockedCount && <small>{tool.lockedCount}</small>}
-        </button>
       </div>
       {!!selection?.count && !tool.readOnly && (
         <div className="board-object-properties" role="toolbar" aria-label="Выделенный объект">
@@ -353,9 +347,8 @@ export default function BoardTools({
             </>
           )}
           {selection.figure && (
-            <button type="button" disabled={locked} onClick={() => choose('shapes')}>
-              <Box size={16} />
-              Параметры фигуры
+            <button type="button" disabled={locked} onClick={() => editor.current?.ungroup()}>
+              Разгруппировать фигуру
             </button>
           )}
           {selection.fill && selection.fill !== 'transparent' && (
@@ -393,7 +386,6 @@ export default function BoardTools({
               stickers: 'Стикеры',
               formulas: 'Готовые формулы',
               text: 'Настройки текста',
-              locked: 'Закреплённые объекты',
             }[panel]
           }
         >
@@ -406,7 +398,6 @@ export default function BoardTools({
                   stickers: 'Стикеры',
                   formulas: 'Готовые формулы',
                   text: 'Текст',
-                  locked: 'Закреплённые объекты',
                 }[panel]
               }
             </h2>
@@ -425,7 +416,7 @@ export default function BoardTools({
                   className={!space ? 'active' : ''}
                   onClick={() => {
                     setSpace(false);
-                    setSpec({ ...spec, kind: 'rectangle' });
+                    setFigure('rectangle');
                   }}
                 >
                   Плоские
@@ -434,7 +425,7 @@ export default function BoardTools({
                   className={space ? 'active' : ''}
                   onClick={() => {
                     setSpace(true);
-                    setSpec({ ...spec, kind: 'cube' });
+                    setFigure('cube');
                   }}
                 >
                   Объёмные
@@ -447,12 +438,14 @@ export default function BoardTools({
                     <button
                       key={f.id}
                       aria-label={`Фигура: ${f.name}`}
-                      className={spec.kind === f.id ? 'active' : ''}
-                      onClick={() => setSpec({ ...spec, kind: f.id })}
+                      className={(tool.figureKind || figure) === f.id ? 'active' : ''}
+                      onClick={() => {
+                        setFigure(f.id);
+                        act(() => editor.current?.setFigureKind(f.id));
+                      }}
                     >
                       <VectorPreview
                         parts={figureParts({
-                          ...spec,
                           kind: f.id,
                           width: 120,
                           height: 100,
@@ -463,65 +456,9 @@ export default function BoardTools({
                     </button>
                   ))}
               </div>
-              <div className="board-figure-fields">
-                {[
-                  ['width', 'Ширина'],
-                  ['height', 'Высота'],
-                  ['depth', 'Глубина'],
-                ].map(([key, label]) => (
-                  <label key={key}>
-                    {label}
-                    <input
-                      aria-label={`${label} фигуры`}
-                      type="number"
-                      min={key === 'depth' ? 15 : 40}
-                      max={key === 'depth' ? 400 : 1200}
-                      value={
-                        key === 'height' &&
-                        ['square', 'circle', 'cube', 'sphere'].includes(spec.kind)
-                          ? spec.width
-                          : spec[key as 'width' | 'height' | 'depth']
-                      }
-                      disabled={
-                        (key === 'height' &&
-                          ['square', 'circle', 'cube', 'sphere'].includes(spec.kind)) ||
-                        (key === 'depth' &&
-                          (!figures.find((f) => f.id === spec.kind)?.space ||
-                            spec.kind === 'sphere'))
-                      }
-                      onChange={(e) => setSpec({ ...spec, [key]: Number(e.target.value) })}
-                    />
-                  </label>
-                ))}
-              </div>
-              <button
-                className="btn btn-primary board-panel-submit"
-                disabled={disabled}
-                onClick={() => act(() => editor.current?.addFigure(spec))}
-              >
-                Добавить фигуру
-              </button>
-              {selection?.figure && (
-                <>
-                  <button
-                    className="btn btn-secondary board-panel-submit"
-                    disabled={disabled || locked}
-                    onClick={() => act(() => editor.current?.editFigure(spec))}
-                  >
-                    Применить к выделенной фигуре
-                  </button>
-                  <button
-                    className="board-panel-link"
-                    disabled={disabled || locked}
-                    onClick={() => act(() => editor.current?.ungroup())}
-                  >
-                    Разгруппировать для изменения рёбер
-                  </button>
-                </>
-              )}
               <p className="board-panel-hint">
-                Фигура состоит из линий и форм. Её можно перемещать, растягивать и вращать; двойной
-                щелчок открывает отдельные элементы.
+                Выберите фигуру и протяните мышь по холсту. Затем меняйте её размер и поворот
+                маркерами выделения. Shift сохраняет пропорции, Esc отменяет рисование.
               </p>
             </>
           )}
@@ -760,29 +697,7 @@ export default function BoardTools({
               )}
             </>
           )}
-          {panel === 'locked' && (
-            <div className="board-locked-objects">
-              {lockedItems.length ? (
-                lockedItems.map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => {
-                      editor.current?.selectObject(item.id);
-                      setPanel(null);
-                    }}
-                  >
-                    <LockKeyhole size={16} />
-                    <span>{item.label}</span>
-                    <ChevronDown size={15} />
-                  </button>
-                ))
-              ) : (
-                <p className="board-panel-hint">
-                  Выделите текст или фигуру и нажмите замочек рядом с настройками.
-                </p>
-              )}
-            </div>
-          )}
+
           {error && <p role="alert">{error}</p>}
         </div>
       )}

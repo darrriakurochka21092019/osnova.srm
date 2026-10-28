@@ -1,6 +1,36 @@
-import type { FigureSpec, LineKind } from './catalog';
+import type { FigureKind, FigureSpec, LineKind } from './catalog';
 export type Point = [number, number];
 const tau = Math.PI * 2;
+export function figureFromDrag(kind: FigureKind, start: Point, end: Point, constrain = false) {
+  let width = Math.max(1, Math.abs(end[0] - start[0])),
+    height = Math.max(1, Math.abs(end[1] - start[1]));
+  if (constrain || ['square', 'circle', 'sphere'].includes(kind))
+    width = height = Math.max(width, height);
+  const x = end[0] < start[0] ? start[0] - width : start[0],
+    y = end[1] < start[1] ? start[1] - height : start[1];
+  const spec: FigureSpec = { kind, width, height, depth: Math.min(width, height) * 0.3 };
+  const parts = figureParts(spec).map((p) =>
+    p.type === 'text'
+      ? { ...p, width: p.fontSize * p.text.length * 0.65, height: p.fontSize * 1.15 }
+      : p,
+  );
+  const minX = Math.min(...parts.map((p) => p.x)),
+    minY = Math.min(...parts.map((p) => p.y));
+  const sx = width / (Math.max(...parts.map((p) => p.x + p.width)) - minX || 1),
+    sy = height / (Math.max(...parts.map((p) => p.y + p.height)) - minY || 1);
+  return {
+    spec,
+    parts: parts.map((p) => ({
+      ...p,
+      x: x + (p.x - minX) * sx,
+      y: y + (p.y - minY) * sy,
+      width: p.width * sx,
+      height: p.height * sy,
+      ...(p.type === 'text' ? { fontSize: p.fontSize * Math.min(sx, sy) } : {}),
+      ...(p.points ? { points: p.points.map(([px, py]: Point) => [px * sx, py * sy]) } : {}),
+    })),
+  };
+}
 export function path(points: Point[], style: Record<string, any> = {}) {
   const x = Math.min(...points.map((p) => p[0])),
     y = Math.min(...points.map((p) => p[1]));

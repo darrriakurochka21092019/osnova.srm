@@ -1302,9 +1302,7 @@
   height: 92px;
   min-height: 92px;
   border-top: 1px solid #edf0f7;
-  background:
-    radial-gradient(circle, #dbe1ee 0.6px, transparent 0.9px) 0 0/18px 18px,
-    #f8faff;
+  background: #f8faff;
   z-index: 14;
   display: flex;
   align-items: center;

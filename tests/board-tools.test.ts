@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { figures, type FigureSpec } from '../apps/web/src/board/catalog';
-import { decorateLine, figureParts, lineParts } from '../apps/web/src/board/geometry';
+import {
+  decorateLine,
+  figureParts,
+  figureFromDrag,
+  lineParts,
+} from '../apps/web/src/board/geometry';
+import { canvasHit, objectSelection } from '../apps/web/src/board/interaction';
 import { captureCanvas } from '../apps/web/src/board/canvas';
 import { projectCanvas } from '../packages/contracts/canvas';
 
@@ -82,6 +88,52 @@ const base = (id: string, fields: any = {}) => ({
   isDeleted: false,
   angle: 0,
   ...fields,
+});
+test('dragged figures fit the gesture in all directions, with optional constrained proportions', () => {
+  for (const figure of figures)
+    for (const end of [
+      [410, 285],
+      [80, 45],
+    ] as [number, number][]) {
+      const { parts } = figureFromDrag(figure.id, [210, 165], end);
+      const x = Math.min(...parts.map((p) => p.x)),
+        y = Math.min(...parts.map((p) => p.y)),
+        w = Math.max(...parts.map((p) => p.x + p.width)) - x,
+        h = Math.max(...parts.map((p) => p.y + p.height)) - y;
+      if (!['square', 'circle', 'sphere'].includes(figure.id)) {
+        assert.ok(Math.abs(w - Math.abs(end[0] - 210)) < 1e-6, figure.id);
+        assert.ok(Math.abs(h - Math.abs(end[1] - 165)) < 1e-6, figure.id);
+      } else assert.ok(Math.abs(w - h) < 1e-6, figure.id);
+      assert.ok(parts.every((p) => Number.isFinite(p.x + p.y + p.width + p.height)));
+    }
+  const { parts } = figureFromDrag('cube', [100, 100], [120, 110], true);
+  assert.ok(
+    parts.every((p) => p.x >= 100 && p.y >= 100 && p.x + p.width <= 120 && p.y + p.height <= 120),
+  );
+});
+test('locked objects can be picked without intercepting empty interiors or higher objects', () => {
+  const frame = base('frame', { locked: true, backgroundColor: 'transparent' });
+  const text = base('text', { type: 'text', x: 20, y: 30, width: 60, height: 24 });
+  assert.equal(canvasHit([frame, text], { x: 40, y: 40 }, 3)?.id, 'text');
+  assert.equal(canvasHit([frame, text], { x: 0, y: 70 }, 3)?.id, 'frame');
+  assert.equal(canvasHit([frame], { x: 100, y: 80 }, 3), undefined);
+  const rotated = base('rotated', {
+    type: 'text',
+    width: 100,
+    height: 20,
+    angle: Math.PI / 2,
+    locked: true,
+  });
+  assert.equal(canvasHit([rotated], { x: 50, y: 50 }, 3)?.id, 'rotated');
+  assert.equal(canvasHit([rotated], { x: 0, y: 10 }, 3), undefined);
+  const parent = base('parent', { groupIds: ['outer'], locked: true });
+  const bound = base('label', { type: 'text', containerId: 'parent', locked: true });
+  const edge = base('edge', { type: 'line', groupIds: ['outer'], locked: true });
+  assert.deepEqual(
+    new Set(objectSelection([parent, bound, edge], 'label')),
+    new Set(['parent', 'label', 'edge']),
+  );
+  assert.equal(canvasHit([{ ...frame, isDeleted: true }], { x: 0, y: 70 }, 3), undefined);
 });
 test('ink written on a sticker follows translation, scale and rotation once', () => {
   const note = base('note', { customData: { sticker: { kind: 'note' } } });

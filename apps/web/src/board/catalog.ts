@@ -10,6 +10,9 @@ export const noteColors = [
 export const fonts = [
   { id: 2, name: 'Обычный' },
   { id: 5, name: 'Рукописный' },
+  { id: 6, name: 'Мягкий — Nunito' },
+  { id: 3, name: 'Моноширинный — Cascadia' },
+  { id: 1, name: 'Скетч — Virgil' },
 ];
 export const fontSizes = [12, 16, 20, 24, 28, 36, 48, 64, 96];
 export const lineKinds = [

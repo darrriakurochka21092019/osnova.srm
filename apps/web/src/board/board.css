@@ -12,9 +12,63 @@
   pointer-events: none;
   z-index: 0;
 }
-.canvas-shell > .excalidraw {
+.board-surface {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.board-surface > .excalidraw {
   position: relative;
   background: transparent !important;
+}
+.board-surface.is-panning,
+.board-surface.is-panning canvas {
+  cursor: grabbing !important;
+}
+.board-surface.is-drawing-figure canvas {
+  cursor: crosshair !important;
+}
+.board-drawing-preview {
+  position: absolute;
+  pointer-events: none;
+  z-index: 5;
+}
+.board-drawing-preview svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.board-drawing-hint {
+  position: absolute;
+  top: 132px;
+  left: 108px;
+  max-width: calc(100% - 120px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #e3dfff;
+  border-radius: 10px;
+  padding: 7px 10px;
+  color: #5e56b8;
+  background: #f5f2ffed;
+  box-shadow: 0 3px 12px #30216d0a;
+  font-size: 11px;
+  z-index: 6;
+}
+.board-drawing-hint button {
+  background: none;
+  color: inherit;
+  border: 0;
+  display: flex;
+  padding: 2px;
+}
+@media (max-width: 760px) {
+  .board-drawing-hint {
+    left: 64px;
+    top: 118px;
+    max-width: calc(100% - 74px);
+    font-size: 10px;
+  }
 }
 .presentation-overlay {
   position: absolute;
