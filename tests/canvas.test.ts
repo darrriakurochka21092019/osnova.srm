@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { unifyLegacyScenes, projectCanvas, presentationOf } from '../packages/contracts/canvas';
-import { captureCanvas, snapshotCanvas } from '../apps/web/src/board/canvas';
+import { captureCanvas, snapshotCanvas, repairCanvasGeometry } from '../apps/web/src/board/canvas';
+import { repairOfflineDraft } from '../apps/web/src/board/offline';
 const shape = (id: string, extra: any = {}) => ({
   id,
   type: 'rectangle',
@@ -32,6 +33,126 @@ const deck = () =>
       },
     },
   });
+
+test('damaged pen dimensions recover from samples without changing origin, pressure, metadata or good geometry', () => {
+  const ink = shape('ink', {
+    type: 'freedraw',
+    x: 140,
+    y: -30,
+    width: NaN,
+    height: null,
+    points: [
+      [0, 0],
+      [-80, 20],
+      [30, -40],
+    ],
+    pressures: [0.2, 0.7, 0.4],
+    customData: { formula: { title: 'keep' } },
+  });
+  const original = structuredClone(ink),
+    fixed = repairCanvasGeometry([ink])[0];
+  assert.equal(fixed.width, 110);
+  assert.equal(fixed.height, 60);
+  assert.equal(fixed.x, 140);
+  assert.equal(fixed.y, -30);
+  assert.deepEqual(fixed.points, ink.points);
+  assert.deepEqual(fixed.pressures, ink.pressures);
+  assert.deepEqual(fixed.customData, ink.customData);
+  assert.ok(fixed.version > ink.version);
+  assert.deepEqual(ink, original);
+  assert.equal(repairCanvasGeometry([fixed])[0], fixed);
+  assert.equal(repairCanvasGeometry([fixed], [fixed])[0], fixed);
+  const badTail = {
+    ...fixed,
+    points: [...fixed.points, [NaN, Infinity]],
+    pressures: [...fixed.pressures, undefined],
+    lastCommittedPoint: [NaN, NaN],
+  };
+  const clean = repairCanvasGeometry([badTail])[0];
+  assert.deepEqual(clean.points, ink.points);
+  assert.deepEqual(clean.pressures, ink.pressures);
+  assert.deepEqual(clean.lastCommittedPoint, [30, -40]);
+  const deleted = repairCanvasGeometry([
+    shape('cancelled', {
+      type: 'line',
+      isDeleted: true,
+      width: -Infinity,
+      height: -Infinity,
+      points: [],
+    }),
+  ])[0];
+  assert.equal(deleted.width, 0);
+  assert.equal(deleted.height, 0);
+  assert.equal(deleted.isDeleted, true);
+  const unknown = shape('unknown', { x: NaN });
+  assert.equal(repairCanvasGeometry([unknown])[0], unknown, 'Never invent a visible object origin');
+  assert.equal(repairCanvasGeometry([unknown], [shape('unknown', { x: 80 })])[0].x, 80);
+});
+test('draft repair replaces only rejected malformed operations and preserves idempotence of valid retries', () => {
+  const ink = shape('ink', {
+    type: 'freedraw',
+    width: NaN,
+    height: Infinity,
+    points: [
+      [0, 0],
+      [50, 30],
+    ],
+  });
+  const pending = {
+    id: 'rejected',
+    changes: [{ element: structuredClone(ink), baseVersion: null }],
+  };
+  const fixed = repairOfflineDraft({ elements: [ink], base: [], files: {}, pending });
+  assert.notEqual(fixed.pending!.id, pending.id);
+  assert.equal(fixed.pending!.changes[0].element, fixed.elements[0]);
+  assert.equal(fixed.elements[0].width, 50);
+  const retried = repairOfflineDraft({ ...fixed, pending: structuredClone(fixed.pending) });
+  assert.equal(retried.pending!.id, fixed.pending!.id, 'Keep the UUID after a lost successful ACK');
+  assert.deepEqual(retried.pending!.changes, fixed.pending!.changes);
+  const newer = {
+    ...ink,
+    version: 2,
+    versionNonce: 10,
+    width: 70,
+    height: 30,
+    points: [
+      [0, 0],
+      [70, 30],
+    ],
+  };
+  const advanced = repairOfflineDraft({ elements: [newer], base: [], files: {}, pending });
+  assert.ok(advanced.elements[0].version > advanced.pending!.changes[0].element.version);
+  assert.deepEqual(advanced.elements[0].points, newer.points);
+});
+test('collapsing and moving a sticker or PDF never divides its annotation geometry by zero', () => {
+  for (const type of ['sticker', 'presentation']) {
+    const parent =
+      type === 'sticker' ? shape('parent', { customData: { sticker: { kind: 'note' } } }) : deck();
+    const ink = shape('child', {
+      type: 'freedraw',
+      x: 25,
+      y: 35,
+      width: 20,
+      height: 10,
+      points: [
+        [0, 0],
+        [20, 10],
+      ],
+      customData:
+        type === 'sticker'
+          ? { stickerAnnotation: { stickerId: parent.id } }
+          : { slideAnnotation: { presentationId: parent.id, slideIndex: 0 } },
+    });
+    const collapsed = { ...parent, width: 0, height: 0, version: 2 };
+    const a = captureCanvas([collapsed, ink], [parent, ink]);
+    const b = captureCanvas([{ ...collapsed, x: 140, y: 160, version: 3 }, a[1]], a);
+    const c = captureCanvas([{ ...parent, x: 140, y: 160, version: 4 }, b[1]], b);
+    for (const scene of [a, b, c]) {
+      assert.deepEqual(scene[1].points, ink.points);
+      assert.ok(['x', 'y', 'width', 'height'].every((key) => Number.isFinite(scene[1][key])));
+    }
+  }
+});
 
 test('legacy pages are arranged on one canvas without mutating the source or colliding IDs', () => {
   const pages = [

@@ -1,9 +1,45 @@
+import { repairCanvasGeometry } from './canvas';
+import { changedElement } from '../../../../packages/contracts/canvas';
+
 export type OfflineDraft = {
   elements: any[];
   base: any[];
   files: Record<string, any>;
   pending?: { id: string; changes: any[] } | null;
 };
+
+/** A rejected malformed operation must not keep replaying after the scene is fixed. */
+export function repairOfflineDraft(draft: OfflineDraft): OfflineDraft {
+  let elements = repairCanvasGeometry(draft.elements, draft.base);
+  let pending = draft.pending;
+  if (pending) {
+    const original = new Map(draft.elements.map((e) => [e.id, e])),
+      repaired = new Map(elements.map((e) => [e.id, e]));
+    const changes = pending.changes.map((change) => {
+      const source = original.get(change.element.id),
+        canonical = repaired.get(change.element.id);
+      const element =
+        source &&
+        canonical !== source &&
+        source.version === change.element.version &&
+        source.versionNonce === change.element.versionNonce
+          ? canonical
+          : repairCanvasGeometry([change.element], draft.base)[0];
+      return element === change.element ? change : { ...change, element };
+    });
+    if (changes.some((c, i) => c.element !== pending!.changes[i].element)) {
+      pending = { id: crypto.randomUUID(), changes };
+      const attempts = new Map(changes.map((c) => [c.element.id, c.element]));
+      elements = elements.map((e) => {
+        const attempt = attempts.get(e.id);
+        return attempt && attempt !== e && e.version <= attempt.version
+          ? changedElement({ ...e, version: attempt.version }, {})
+          : e;
+      });
+    }
+  }
+  return { ...draft, elements, pending };
+}
 type StoredDraft = OfflineDraft & { fileIds?: string[] };
 let connection: Promise<IDBDatabase> | undefined;
 const fileKey = (key: string, id: string) => [key, id];

@@ -57,7 +57,13 @@ import {
   SaveButton,
 } from '../ui';
 import { InviteDialog } from './editors';
-import { readDraft, writeDraft, pruneDraftFiles, type OfflineDraft } from '../board/offline';
+import {
+  readDraft,
+  writeDraft,
+  pruneDraftFiles,
+  repairOfflineDraft,
+  type OfflineDraft,
+} from '../board/offline';
 import type {
   Asset,
   Board,
@@ -67,7 +73,7 @@ import type {
 } from '../../../../packages/contracts';
 
 import { backgrounds, backgroundStyle, paintBackground } from '../board/background';
-import { captureCanvas, snapshotCanvas } from '../board/canvas';
+import { captureCanvas, snapshotCanvas, repairCanvasGeometry } from '../board/canvas';
 import { decorateLine, figureFromDrag, badgeParts } from '../board/geometry';
 import { canvasHit, objectSelection } from '../board/interaction';
 import { figures, type FigureKind, type FigureSpec, type LineKind } from '../board/catalog';
@@ -1138,7 +1144,7 @@ function PageEditor({
   const captureRendered = (elements: readonly any[], before = current.current) => {
     nativeScene.current = { elements, version: elements.reduce((n, e) => n + e.version, 0) };
     const oldIds = new Set(before.map((e) => e.id));
-    const decorated = elements.flatMap((e) =>
+    const decorated = repairCanvasGeometry(elements, before).flatMap((e) =>
       dragStart.current &&
       e.type === 'line' &&
       !e.isDeleted &&
@@ -1230,6 +1236,7 @@ function PageEditor({
           storageOkay.current = false;
         }
         if (draft && !readOnly) {
+          draft = repairOfflineDraft(draft);
           const oldBase = new Map(draft.base.map((e) => [e.id, e])),
             localDirty = draft.elements.filter(
               (e) => fingerprint(e) !== fingerprint(oldBase.get(e.id)),
@@ -1244,6 +1251,7 @@ function PageEditor({
           fileData.current = draft.files;
           pendingOperation.current = draft.pending || null;
         }
+        if (!readOnly) scene = repairCanvasGeometry(scene);
         const recovery = await readDraft(`${key}:conflict`).catch(() => undefined);
         if (recovery?.elements.length)
           onConflict({ elements: recovery.elements, files: recovery.files });
@@ -1313,6 +1321,16 @@ function PageEditor({
     if (!ready.current || running.current) return;
     clearTimeout(timer.current);
     timer.current = undefined;
+    const repaired = repairOfflineDraft({
+      elements: current.current,
+      base: [...base.current.values()],
+      files: fileData.current,
+      pending: pendingOperation.current,
+    });
+    const geometryChanged = repaired.elements.some((e, i) => e !== current.current[i]);
+    current.current = repaired.elements;
+    pendingOperation.current = repaired.pending || null;
+    if (geometryChanged) renderScene();
     const dirty = diff();
     if (!dirty.length && !pendingOperation.current) {
       onSave('saved');

@@ -316,14 +316,14 @@ export function lineParts(kind: LineKind, length: number): any[] {
 }
 /** Native vectors: no bitmap assets and no per-pointer-sample expansion. */
 export function decorateLine(element: any, kind: LineKind, groupId: string) {
-  const points = element.points as Point[],
+  const points = (element.points || []) as Point[],
     start = points[0] || [0, 0],
     end = points[points.length - 1] || [element.width, 0];
   const dx = end[0] - start[0],
     dy = end[1] - start[1],
     length = Math.hypot(dx, dy),
     angle = Math.atan2(dy, dx) + (element.angle || 0);
-  if (length < 3) return [element];
+  if (!Number.isFinite(length) || !Number.isFinite(angle) || length < 3) return [element];
   const c = Math.cos(angle),
     s = Math.sin(angle);
   return lineParts(kind, length).map((part, i) => {

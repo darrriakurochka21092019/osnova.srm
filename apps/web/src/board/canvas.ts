@@ -5,6 +5,69 @@ import {
   slideIsHidden,
 } from '../../../../packages/contracts/canvas';
 
+const finite = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+const geometryKeys = ['x', 'y', 'width', 'height'] as const;
+
+/** Repair derived geometry, preserving the world origin and every valid ink sample.
+ * Runs at commit/recovery boundaries, never while a pen is in contact. Previously
+ * validated unchanged elements retain their references and need no point scan.
+ */
+export function repairCanvasGeometry(elements: readonly any[], previous: readonly any[] = []) {
+  const old = new Map(previous.map((e) => [e.id, e]));
+  return elements.map((e) => {
+    const before = old.get(e.id);
+    if (
+      before &&
+      e.version === before.version &&
+      e.versionNonce === before.versionNonce &&
+      geometryKeys.every((key) => finite(e[key]) && e[key] === before[key])
+    )
+      return e;
+    const patch: Record<string, any> = {};
+    if (Array.isArray(e.points)) {
+      const indices: number[] = [];
+      let minX = Infinity,
+        minY = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity;
+      for (let i = 0; i < e.points.length; i++) {
+        const p = e.points[i];
+        if (!Array.isArray(p) || !finite(p[0]) || !finite(p[1])) continue;
+        indices.push(i);
+        minX = Math.min(minX, p[0]);
+        minY = Math.min(minY, p[1]);
+        maxX = Math.max(maxX, p[0]);
+        maxY = Math.max(maxY, p[1]);
+      }
+      const damaged = indices.length !== e.points.length;
+      if (damaged) {
+        patch.points = indices.map((i) => e.points[i]);
+        if (Array.isArray(e.pressures) && e.pressures.length)
+          patch.pressures = indices.map((i) => (finite(e.pressures[i]) ? e.pressures[i] : 0.5));
+        if (e.lastCommittedPoint) patch.lastCommittedPoint = patch.points.at(-1) || null;
+      }
+      if (indices.length && (damaged || !finite(e.width) || !finite(e.height))) {
+        patch.width = maxX - minX;
+        patch.height = maxY - minY;
+      } else if (!indices.length && (damaged || !finite(e.width) || !finite(e.height))) {
+        // A cancelled, empty vector has no visible samples to recover.
+        patch.width = 0;
+        patch.height = 0;
+        patch.isDeleted = true;
+      }
+    }
+    for (const key of geometryKeys) {
+      if (finite(patch[key]) || finite(e[key])) continue;
+      if (finite(before?.[key])) patch[key] = before[key];
+      else if (e.isDeleted || patch.isDeleted) patch[key] = 0;
+      // An unknown origin of a live object cannot be inferred from relative points.
+      // Keep it for local recovery instead of moving the user's content to (0, 0).
+    }
+    return Object.keys(patch).length ? changedElement(e, patch) : e;
+  });
+}
+
 /** Restore hidden annotations and attach newly created objects to the visible PDF slide. */
 export function captureCanvas(
   rendered: readonly any[],
@@ -83,6 +146,8 @@ export function captureCanvas(
 }
 
 function transformChild(e: any, source: any, parent: any, prior: any) {
+  if (![parent.width, parent.height, prior.width, prior.height].every((n) => finite(n) && n > 0))
+    return e; // A collapsed parent has no defined scale; preserve its last good ink.
   const sx = parent.width / prior.width,
     sy = parent.height / prior.height;
   const angle = (parent.angle || 0) - (prior.angle || 0);
