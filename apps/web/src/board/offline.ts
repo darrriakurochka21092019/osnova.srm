@@ -6,6 +6,7 @@ export type OfflineDraft = {
   base: any[];
   files: Record<string, any>;
   pending?: { id: string; changes: any[] } | null;
+  richTextDraft?: { id: string; x: number; y: number; angle: number; model: any; groupIds?: string[] };
 };
 
 /** A rejected malformed operation must not keep replaying after the scene is fixed. */

@@ -25,6 +25,7 @@ import {
   VideoOff,
   MonitorOff,
   X,
+  GraduationCap,
 } from 'lucide-react';
 import type { BoardBackground, LessonSession } from '../../../../packages/contracts';
 import type {
@@ -169,6 +170,7 @@ export default function LessonWorkspace({
       setError((e as Error).message);
     }
   };
+  const [endOpen, setEndOpen] = useState(false);
   const finish = async () => {
     if (!room) return;
     setBusy(true);
@@ -353,6 +355,11 @@ export default function LessonWorkspace({
               editorRef={editor}
               controlsRef={controls}
               forceReadOnly={archive || room.permission === 'view'}
+              exportComments={messages.map((m) => ({
+                name: m.author_name,
+                body: m.body,
+                date: m.created_at,
+              }))}
               onReady={() => setReady(true)}
               onSaveState={(state, error) =>
                 setSave((old) =>
@@ -569,7 +576,12 @@ export default function LessonWorkspace({
           <button
             className={`lesson-end-button ${mode === 'prepare' ? 'start' : ''}`}
             disabled={busy || !ready}
-            onClick={() => void finish()}
+            onClick={() => {
+              if (teacher && !archive && mode !== 'prepare') {
+                setEndOpen(true);
+                void editor.current?.flush().catch((e) => setError(e.message));
+              } else void finish();
+            }}
           >
             {busy ? (
               <LoaderCircle className="spin" size={20} />
@@ -594,6 +606,45 @@ export default function LessonWorkspace({
           </span>
         </div>
       </footer>
+      {endOpen && (
+        <Modal
+          title="Завершить урок?"
+          className="lesson-end-modal"
+          onClose={() => !busy && setEndOpen(false)}
+        >
+          <div className="lesson-end-symbol">
+            <GraduationCap size={52} />
+          </div>
+          <p>
+            {save.state === 'saved'
+              ? 'Доска и материалы сохранены. После завершения вы сможете назначить домашнее задание.'
+              : save.state === 'error'
+                ? 'Не удалось сохранить изменения. Повторите сохранение перед завершением урока.'
+                : 'Сохраняем доску и материалы…'}
+          </p>
+          {error && <FormError error={error} />}
+          {save.state === 'error' && (
+            <Button
+              variant="secondary"
+              onClick={() => void editor.current?.flush().catch((e) => setError(e.message))}
+            >
+              Повторить сохранение
+            </Button>
+          )}
+          <div className="lesson-end-actions">
+            <Button variant="secondary" disabled={busy} onClick={() => setEndOpen(false)}>
+              Продолжить урок
+            </Button>
+            <Button
+              className="lesson-end-confirm"
+              disabled={busy || save.state !== 'saved'}
+              onClick={() => void finish()}
+            >
+              {busy ? <LoaderCircle className="spin" size={18} /> : null}Завершить урок
+            </Button>
+          </div>
+        </Modal>
+      )}
       {access && (
         <LessonAccess roomId={id} onClose={() => setAccess(false)} onChange={() => void load()} />
       )}

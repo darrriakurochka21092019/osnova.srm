@@ -41,7 +41,16 @@ export function slideIsHidden(
 // Visibility is a local rendering projection, not a persisted deletion or a new version.
 export function projectCanvas(scene: readonly any[]) {
   const index = new Map(scene.map((e) => [e.id, e]));
-  return scene.map((e) => (slideIsHidden(e, scene, index) ? { ...e, isDeleted: true } : e));
+  return orderCanvas(scene).map((e) =>
+    slideIsHidden(e, scene, index) ? { ...e, isDeleted: true } : e,
+  );
+}
+export function orderCanvas<T extends Record<string, any>>(scene: readonly T[]): T[] {
+  return scene.every((e) => typeof e.index === 'string')
+    ? [...scene].sort((a, b) =>
+        String(a.index) < String(b.index) ? -1 : String(a.index) > String(b.index) ? 1 : 0,
+      )
+    : [...scene];
 }
 export function changedElement(element: any, patch: Record<string, any>) {
   return {

@@ -1,4 +1,19 @@
-export const inkColors = ['#252846', '#554bff', '#30b995', '#ffa16c', '#b9afff'];
+export const inkColors = ['#6038ff', '#11162e', '#00a77a', '#ff8b34', '#bda5ff'];
+export const penSizes = { min: 0.5, max: 6, step: 0.25, initial: 2 };
+export const markerSizes = { min: 6, max: 24, step: 1, initial: 14 };
+export const inkScale = 4.25;
+export const pictureStickers = [
+  ['ed-hello', 'Эд: привет'],
+  ['ed-idea', 'Эд: есть идея'],
+  ['ed-thinking', 'Эд: думает'],
+  ['ed-support', 'Эд: у тебя получится'],
+  ['ed-celebration', 'Эд: получилось'],
+  ['books', 'Это база!'],
+  ['trophy', 'Уровень пройден!'],
+  ['brain', 'Мозг на максимум'],
+  ['mistake', 'Ошибка — тоже опыт'],
+  ['break', 'Перерыв на выдох'],
+].map(([id, name]) => ({ id, name, src: `/board-stickers/${id}.webp` }));
 export const noteColors = [
   ['#fff0a8', 'Жёлтый'],
   ['#e7ddff', 'Лавандовый'],

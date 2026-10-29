@@ -52,9 +52,11 @@ async function multipart(
   mime: string,
   cookie: string,
   boardId?: string,
+  excalidrawId?: string,
 ) {
   const form = new FormData();
   if (boardId) form.append('boardId', boardId);
+  if (excalidrawId) form.append('excalidrawId', excalidrawId);
   form.append('file', new Blob([new Uint8Array(buffer)], { type: mime }), name);
   const encoded = new Request('http://localhost', { method: 'POST', body: form });
   const r = await ctx.app.inject({
@@ -604,5 +606,93 @@ test('single canvas migration preserves old pages and is idempotent; background 
   assert.equal(
     (await request('PATCH', `/boards/${b.id}`, { background: 'unsupported' })).status,
     400,
+  );
+});
+
+test('formatted text uses private board files, validates metadata and persists fractional layer order', async () => {
+  const b = (await request('POST', '/boards', { title: 'Демо форматированный текст' })).body;
+  const full = (await request('POST', `/boards/${b.id}/canvas`, {})).body,
+    id = full.canvas_page_id;
+  const fileId = randomUUID(),
+    png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP3cAAAAASUVORK5CYII=',
+      'base64',
+    );
+  const file = await multipart(png, 'Текст.png', 'image/png', teacherCookie, b.id, fileId);
+  assert.equal(file.status, 200);
+  const rich = {
+    text: 'Площадь круга: S = πr²',
+    family: 'literata',
+    fontSize: 24,
+    bold: true,
+    italic: false,
+    underline: true,
+    align: 'center',
+    color: '#6038ff',
+  };
+  const text = {
+    ...element(),
+    type: 'image',
+    fileId,
+    index: 'a1',
+    customData: { richText: rich, richTextSize: { width: 100, height: 100 } },
+  };
+  const background = { ...element(), index: 'a0' };
+  let r = await request('POST', `/pages/${id}/operations`, {
+    operationId: randomUUID(),
+    changes: [
+      { element: text, baseVersion: null },
+      { element: background, baseVersion: null },
+    ],
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const stored = (await request('GET', `/pages/${id}/snapshot`)).body.scene;
+  assert.deepEqual(
+    stored.map((e: any) => e.id),
+    [background.id, text.id],
+  );
+  assert.deepEqual(stored[1].customData.richText, rich);
+  r = await request('POST', `/pages/${id}/operations`, {
+    operationId: randomUUID(),
+    changes: [{ element: { ...text, version: 2, index: 'Zz' }, baseVersion: 1 }],
+  });
+  assert.equal(r.status, 200);
+  assert.equal((await request('GET', `/pages/${id}/snapshot`)).body.scene[0].id, text.id);
+  const malformed = { ...text, version: 3, customData: { richText: { ...rich, fontSize: NaN } } };
+  assert.equal(
+    (
+      await request('POST', `/pages/${id}/operations`, {
+        operationId: randomUUID(),
+        changes: [{ element: malformed, baseVersion: 2 }],
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await request('POST', `/pages/${id}/operations`, {
+        operationId: randomUUID(),
+        changes: [
+          {
+            element: {
+              ...text,
+              version: 3,
+              customData: { richText: { ...rich, text: 'x'.repeat(20001) } },
+            },
+            baseVersion: 2,
+          },
+        ],
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await ctx.app.inject({
+        url: `/api/v1/files/${file.body.id}`,
+        headers: { cookie: otherStudentCookie },
+      })
+    ).statusCode,
+    404,
   );
 });

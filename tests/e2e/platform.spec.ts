@@ -100,20 +100,58 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   await expect
     .poll(async () => {
       const p = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
-      return p.scene.filter((e: any) => e.type === 'text' && !e.isDeleted).length;
+      return p.scene.filter(
+        (e: any) => (e.type === 'text' || e.customData?.richText) && !e.isDeleted,
+      ).length;
     })
     .toBe(2);
   const downloadScene = async () => {
-    await page.getByRole('button', { name: 'Экспорт', exact: true }).click();
-    const awaited = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'Редактируемая сцена .excalidraw' }).click();
-    const d = await awaited;
-    return JSON.parse(await readFile((await d.path())!, 'utf8'));
+    const saved = (await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json()).scene;
+    const local = await page.evaluate(
+      (id) =>
+        new Promise<any>((resolve, reject) => {
+          const r = indexedDB.open('osnova-pending', 2);
+          r.onsuccess = () => {
+            const db = r.result,
+              tx = db.transaction('pages'),
+              store = tx.objectStore('pages'),
+              keys = store.getAllKeys();
+            keys.onsuccess = () => {
+              const key = keys.result.find((k) => String(k).endsWith(`:${id}`));
+              if (!key) {
+                db.close();
+                resolve(null);
+                return;
+              }
+              const data = store.get(key);
+              data.onsuccess = () => {
+                db.close();
+                resolve(data.result);
+              };
+            };
+            r.onerror = () => reject(r.error);
+          };
+        }),
+      pageId,
+    );
+    const elements = local?.elements || saved;
+    const assets = await (await request.get(`/api/v1/boards/${board.id}/files`)).json();
+    const files: Record<string, any> = {};
+    for (const f of assets)
+      if (f.excalidraw_id) {
+        const data = await request.get(`/api/v1/files/${f.id}`);
+        files[f.excalidraw_id] = {
+          dataURL: `data:${f.mime};base64,${(await data.body()).toString('base64')}`,
+        };
+      }
+    return { elements, files };
   };
   await expect
     .poll(async () => {
       const data = await downloadScene();
-      return data.elements.some((e: any) => e.text?.includes('Идея, вопрос'));
+      return data.elements.some((e: any) =>
+        (e.text || e.customData?.richText?.text)?.includes('Идея, вопрос'),
+      );
     })
     .toBeTruthy();
   await guest.setOffline(true);
@@ -125,18 +163,27 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   await expect(guestPage.locator('.excalidraw')).toBeVisible();
   await expect(guestPage.locator('.save-state')).toContainText('Сохранено');
   const afterOffline = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
-  expect(afterOffline.scene.filter((e: any) => e.type === 'text' && !e.isDeleted)).toHaveLength(3);
+  expect(
+    afterOffline.scene.filter(
+      (e: any) => (e.type === 'text' || e.customData?.richText) && !e.isDeleted,
+    ),
+  ).toHaveLength(3);
   await page.getByRole('button', { name: 'Шаг назад', exact: true }).click();
   await expect(page.locator('.save-state')).toContainText('Сохранено');
   await expect
     .poll(async () => {
       const snapshot = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
-      return snapshot.scene.filter((e: any) => e.type === 'text' && !e.isDeleted).length;
+      return snapshot.scene.filter(
+        (e: any) => (e.type === 'text' || e.customData?.richText) && !e.isDeleted,
+      ).length;
     })
     .toBe(2);
   const afterUndo = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
   expect(
-    afterUndo.scene.some((e: any) => e.text?.includes('Идея, вопрос') && !e.isDeleted),
+    afterUndo.scene.some(
+      (e: any) =>
+        (e.text || e.customData?.richText?.text)?.includes('Идея, вопрос') && !e.isDeleted,
+    ),
   ).toBeTruthy();
   await page.getByRole('button', { name: 'Шаг вперед', exact: true }).click();
   await expect(page.locator('.save-state')).toContainText('Сохранено');
@@ -416,7 +463,7 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   ).toHaveCount(0);
   await page.getByRole('button', { name: 'Экспорт', exact: true }).click();
   const pdfDownload = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Документ PDF', exact: true }).click();
+  await page.getByRole('button', { name: 'Скачать', exact: true }).click();
   const exported = await pdfDownload;
   const exportedBytes = await readFile((await exported.path())!);
   expect(exportedBytes.subarray(0, 5).toString()).toBe('%PDF-');
@@ -526,10 +573,6 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   });
   // An unsent version-1 draft from the previous release survives the IndexedDB upgrade.
   const legacy = await browser.newContext({ storageState: await request.storageState() });
-  const legacyLogin = await legacy.request.post('http://127.0.0.1:4173/api/v1/auth/login', {
-    data: { email: 'teacher@example.test', password: 'teacher-test-password' },
-  });
-  expect(legacyLogin.ok()).toBeTruthy();
   const legacyPage = await legacy.newPage();
   legacyPage.on('pageerror', (e) => errors.push(e.message));
   await legacyPage.goto('/api/v1/health');

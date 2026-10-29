@@ -63,7 +63,7 @@ import {
   HelpPage,
 } from './pages/learning';
 
-(window as any).EXCALIDRAW_ASSET_PATH = '/excalidraw-assets/';
+(window as any).EXCALIDRAW_ASSET_PATH = `${window.location.origin}/excalidraw-assets/`;
 const BoardRoom = lazy(() => import('./pages/BoardRoom'));
 const LessonRouter = lazy(() => import('./lesson/LessonRoom'));
 const PublicLessonEntry = lazy(() => import('./lesson/LessonEntry'));

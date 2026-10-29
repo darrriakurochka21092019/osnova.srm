@@ -28,6 +28,13 @@ export async function upload(
   body.append('file', file, options.name || (file instanceof File ? file.name : 'Изображение.png'));
   return api('/files', body);
 }
+// Decode locally: fetch(data:) is blocked by the application's connect-src policy.
+export function dataUrlBlob(value: string): Blob {
+  const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=\r\n]+)$/.exec(value);
+  if (!match) throw new Error('Некорректное изображение доски');
+  const bytes = Uint8Array.from(atob(match[2]), (c) => c.charCodeAt(0));
+  return new Blob([bytes], { type: match[1] });
+}
 export const fileUrl = (id: string, download = false) =>
   `/api/v1/files/${id}${download ? '?download=1' : ''}`;
 export const money = (n: number) =>

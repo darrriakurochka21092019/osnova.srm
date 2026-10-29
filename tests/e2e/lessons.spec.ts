@@ -79,6 +79,7 @@ test('one student link covers preparation, waiting, a shared lesson, comments, s
   await expect(page.getByLabel('Слайд презентации Уравнения')).toHaveValue('0');
   await expect(page.locator('.lesson-save')).toContainText('Все изменения сохранены');
   await page.getByRole('button', { name: 'Ручка', exact: true }).click();
+  await page.getByRole('button', { name: 'Закрыть настройки инструмента', exact: true }).click();
   const area = await page.locator('.lesson-board-area').boundingBox();
   const pen = await teacher.newCDPSession(page);
   const x = area!.x + area!.width * 0.45,
@@ -104,15 +105,30 @@ test('one student link covers preparation, waiting, a shared lesson, comments, s
   await page.getByRole('button', { name: 'Следующий слайд: Уравнения', exact: true }).click();
   await addNote(page);
   await expect
-    .poll(async () => (await scene()).filter((e) => e.type === 'text' && !e.isDeleted).length)
+    .poll(
+      async () =>
+        (await scene()).filter(
+          (e) => e.customData?.richText?.text === 'Заметка урока' && !e.isDeleted,
+        ).length,
+    )
     .toBe(1);
   await page.getByRole('button', { name: 'Отменить действие', exact: true }).click();
   await expect
-    .poll(async () => (await scene()).filter((e) => e.type === 'text' && !e.isDeleted).length)
+    .poll(
+      async () =>
+        (await scene()).filter(
+          (e) => e.customData?.richText?.text === 'Заметка урока' && !e.isDeleted,
+        ).length,
+    )
     .toBe(0);
   await page.getByRole('button', { name: 'Повторить действие', exact: true }).click();
   await expect
-    .poll(async () => (await scene()).filter((e) => e.type === 'text' && !e.isDeleted).length)
+    .poll(
+      async () =>
+        (await scene()).filter(
+          (e) => e.customData?.richText?.text === 'Заметка урока' && !e.isDeleted,
+        ).length,
+    )
     .toBe(1);
 
   const studentContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -161,6 +177,7 @@ test('one student link covers preparation, waiting, a shared lesson, comments, s
   await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
   await studentContext.setOffline(true);
   await page.getByRole('button', { name: 'Завершить', exact: true }).click();
+  await page.getByRole('button', { name: 'Завершить урок', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Урок завершён', exact: true })).toBeVisible();
   await studentContext.setOffline(false);
   await expect(pupil.getByRole('heading', { name: 'Урок завершён', exact: true })).toBeVisible();
@@ -293,7 +310,8 @@ test('three personal links enter one mini-group with four real participants and 
       async () =>
         (
           await (await request.get(`/api/v1/pages/${board.canvas_page_id}/snapshot`)).json()
-        ).scene.filter((e: any) => e.type === 'text' && !e.isDeleted).length,
+        ).scene.filter((e: any) => e.customData?.richText?.text === 'Заметка урока' && !e.isDeleted)
+          .length,
     )
     .toBe(1);
   await page.getByRole('button', { name: 'Комментарии', exact: true }).click();
@@ -326,6 +344,7 @@ test('three personal links enter one mini-group with four real participants and 
   await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Ручка', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'Завершить', exact: true }).click();
+  await page.getByRole('button', { name: 'Завершить урок', exact: true }).click();
   for (const pupil of pupils) {
     await expect(
       pupil.page.getByRole('heading', { name: 'Урок завершён', exact: true }),

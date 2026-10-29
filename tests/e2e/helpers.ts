@@ -27,5 +27,9 @@ export async function selectPresentation(page: Page, title?: string) {
 }
 export async function addNote(page: Page) {
   await page.getByRole('button', { name: 'Стикеры', exact: true }).click();
-  await page.getByRole('button', { name: 'Добавить стикер', exact: true }).click();
+  await page.getByRole('button', { name: 'Заметка', exact: true }).click();
+  await page.getByRole('button', { name: 'Жёлтый стикер', exact: true }).click();
+  const input = page.getByRole('textbox', { name: 'Текст на доске', exact: true });
+  await input.fill('Заметка урока');
+  await input.press('Control+Enter');
 }

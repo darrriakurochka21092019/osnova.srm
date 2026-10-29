@@ -42,7 +42,7 @@ import {
 } from 'lucide-react';
 import '@excalidraw/excalidraw/index.css';
 import '../board/board.css';
-import { api, date, fileUrl, upload } from '../api';
+import { api, date, fileUrl, upload, dataUrlBlob } from '../api';
 import { useApp } from '../store';
 import {
   Avatar,
@@ -75,10 +75,21 @@ import type {
 import { backgrounds, backgroundStyle, paintBackground } from '../board/background';
 import { captureCanvas, snapshotCanvas, repairCanvasGeometry } from '../board/canvas';
 import { decorateLine, figureFromDrag, badgeParts } from '../board/geometry';
-import { canvasHit, objectSelection } from '../board/interaction';
+import { canvasHit, objectSelection, duplicateObjects } from '../board/interaction';
 import { figures, type FigureKind, type FigureSpec, type LineKind } from '../board/catalog';
 import BoardTools, { VectorPreview } from '../board/BoardTools';
 import '../board/tools.css';
+import '../board/fonts.css';
+import { defaultText, textModel, renderText, wrapText, type TextModel } from '../board/richText';
+import BoardExportDialog from '../board/BoardExportDialog';
+import {
+  defaultExport,
+  pdfLayout,
+  type BoardExportOptions,
+  type ExportComment,
+} from '../board/exportLayout';
+import RichTextEditor, { type TextEditing } from '../board/RichTextEditor';
+import { inkScale, penSizes, markerSizes, pictureStickers } from '../board/catalog';
 import {
   presentationOf,
   projectCanvas,
@@ -87,7 +98,7 @@ import {
 } from '../../../../packages/contracts/canvas';
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-(window as any).EXCALIDRAW_ASSET_PATH = '/excalidraw-assets/';
+(window as any).EXCALIDRAW_ASSET_PATH = `${window.location.origin}/excalidraw-assets/`;
 
 export type SaveState = 'saved' | 'saving' | 'offline' | 'error';
 export type BoardSelection = {
@@ -103,6 +114,9 @@ export type BoardSelection = {
   fill?: string;
   text?: string;
   figure?: FigureSpec;
+  type?: string;
+  isNote?: boolean;
+  bounds?: { toolbarX: number; toolbarY: number; menuX: number; menuY: number };
 };
 export type BoardToolState = {
   type: string;
@@ -115,6 +129,9 @@ export type BoardToolState = {
   lineKind?: LineKind;
   figureKind?: FigureKind;
   selection?: BoardSelection;
+  opacity?: number;
+  fill?: string;
+  textStyle?: TextModel;
 };
 export type BoardPresentation = {
   id: string;
@@ -131,7 +148,8 @@ export type BoardControls = {
 };
 export type EditorHandle = {
   flush: () => Promise<void>;
-  export: (type: 'png' | 'pdf' | 'scene') => Promise<void>;
+  export: (type: 'png' | 'pdf' | 'scene', options?: BoardExportOptions) => Promise<void>;
+  previewExport: (options: BoardExportOptions) => Promise<string>;
   addMedia: (elements: any[], files: any[]) => void;
   placement: () => { x: number; y: number };
   addTemplate: (kind: string) => void;
@@ -141,12 +159,25 @@ export type EditorHandle = {
   setTool: (type: string) => void;
   setColor: (color: string) => void;
   setWidth: (width: number) => void;
-  setTextStyle: (style: { fontFamily?: number; fontSize?: number; text?: string }) => void;
+  setOpacity: (opacity: number) => void;
+  setTextStyle: (style: {
+    fontFamily?: string | number;
+    fontSize?: number;
+    text?: string;
+    color?: string;
+    bold?: boolean;
+    italic?: boolean;
+    underline?: boolean;
+    textAlign?: 'left' | 'center' | 'right';
+  }) => Promise<void>;
+  editText: () => void;
+  objectAction: (action: 'duplicate' | 'front' | 'back' | 'delete') => void;
   setFill: (color: string) => void;
   setLineKind: (kind: LineKind) => void;
   setFigureKind: (kind: FigureKind) => void;
   ungroup: () => void;
   addSticker: (kind: string, color: string, text?: string) => void;
+  addPictureSticker: (id: string) => Promise<void>;
   addFormula: (text: string, title?: string) => void;
   lockSelection: () => void;
   selectObject: (id: string) => void;
@@ -166,6 +197,7 @@ type BoardRoomProps = {
   onPresentations?: (presentations: BoardPresentation[]) => void;
   onReady?: () => void;
   forceReadOnly?: boolean;
+  exportComments?: ExportComment[];
 };
 const fingerprint = (e?: any) => (e ? `${e.version}:${e.versionNonce}` : '');
 const download = (blob: Blob, name: string) => {
@@ -691,35 +723,11 @@ export default function BoardRoom(props: BoardRoomProps = {}) {
         />
       )}
       {exportOpen && (
-        <Modal title="Экспорт холста" onClose={() => setExportOpen(false)}>
-          <p className="muted">
-            PNG и PDF включают видимые слайды, пометки и выбранный фон. Редактируемая сцена хранит
-            все слайды и заметки презентаций.
-          </p>
-          <div className="export-options">
-            {[
-              ['png', 'Изображение PNG'],
-              ['pdf', 'Документ PDF'],
-              ['scene', 'Редактируемая сцена .excalidraw'],
-            ].map(([type, label]) => (
-              <Button
-                key={type}
-                variant="secondary"
-                onClick={async () => {
-                  try {
-                    await handle.current?.export(type as any);
-                    setExportOpen(false);
-                  } catch (e) {
-                    toast((e as Error).message);
-                  }
-                }}
-              >
-                <Download size={18} />
-                {label}
-              </Button>
-            ))}
-          </div>
-        </Modal>
+        <BoardExportDialog
+          editor={handle}
+          comments={props.exportComments}
+          onClose={() => setExportOpen(false)}
+        />
       )}
       {help && (
         <Modal title="Общий холст для любого предмета" onClose={() => setHelp(false)}>
@@ -830,8 +838,9 @@ type SurfaceGesture =
       constrain: boolean;
       color: string;
       width: number;
+      fill: string;
     }
-  | { kind: 'locked'; id: number };
+  | { kind: 'locked' | 'text'; id: number };
 
 function PageEditor({
   board,
@@ -872,10 +881,20 @@ function PageEditor({
     [selectedDeck, setSelectedDeck] = useState(''),
     [activeFigure, setActiveFigure] = useState<FigureKind | null>(null),
     [drawing, setDrawing] = useState<{ parts: any[]; color: string; width: number } | null>(null),
-    [panning, setPanning] = useState(false);
+    [panning, setPanning] = useState(false),
+    [textEditing, setTextEditing] = useState<TextEditing | null>(null);
   const surface = useRef<HTMLDivElement>(null),
     surfaceGesture = useRef<SurfaceGesture | null>(null),
-    figureKind = useRef<FigureKind | null>(null);
+    figureKind = useRef<FigureKind | null>(null),
+    textTool = useRef(false),
+    editingRef = useRef<TextEditing | null>(null),
+    recoveredText = useRef<TextEditing | undefined>(undefined),
+    textDefaults = useRef<TextModel>({ ...defaultText }),
+    textTasks = useRef(new Set<Promise<void>>()),
+    textEpoch = useRef(new Map<string, number>()),
+    textDrafts = useRef(new Map<string, TextModel>()),
+    textAutosave = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
+    inkTool = useRef<'pen' | 'marker'>('pen');
   const deckStamp = useRef('');
   const selectionRef = useRef<BoardSelection>({
       ids: [],
@@ -888,8 +907,8 @@ function PageEditor({
     selectedDeckRef = useRef(''),
     lineKind = useRef<LineKind>('single'),
     inkProfiles = useRef({
-      pen: { color: '#252846', width: 2 },
-      marker: { color: '#f0c348', width: 12 },
+      pen: { color: '#11162e', width: penSizes.initial, opacity: 100 },
+      marker: { color: '#ffe94d', width: markerSizes.initial, opacity: 35 },
     });
   const publishSelection = (
     elements: readonly any[],
@@ -901,28 +920,56 @@ function PageEditor({
       if (expanded.has(e.id))
         for (const bound of e.boundElements || [])
           if (bound.type === 'text') expanded.add(bound.id);
+    for (const e of elements)
+      if (expanded.has(e.id)) {
+        for (const id of objectSelection(elements, e.id)) expanded.add(id);
+      }
     const chosen = elements.filter((e) => !e.isDeleted && expanded.has(e.id));
-    const text = chosen.find((e) => e.type === 'text'),
-      first = chosen.find((e) => e.type !== 'text') || chosen[0];
+    const text = chosen.find((e) => textModel(e)),
+      first = chosen.find((e) => e.type !== 'text' && !e.customData?.richText) || chosen[0];
+    const m = editingRef.current?.model || (text && textModel(text));
     const figure = chosen.find((e) => e.customData?.boardFigure)?.customData?.boardFigure?.spec;
+    const [x, y, right, bottom] = chosen.length
+      ? getCommonBounds(chosen)
+      : editingRef.current
+        ? [
+            editingRef.current.x,
+            editingRef.current.y,
+            editingRef.current.x + (m?.maxWidth || 400),
+            editingRef.current.y + (m?.fontSize || 24) * 1.5,
+          ]
+        : [0, 0, 0, 0];
+    const host =
+      surface.current?.closest('.lesson-board-area') || surface.current?.closest('.board-room');
+    const rect = host?.getBoundingClientRect();
+    const ox = state.offsetLeft - (rect?.left || state.offsetLeft),
+      oy = state.offsetTop - (rect?.top || state.offsetTop);
+    const vx = ox + (x + state.scrollX) * state.zoom.value,
+      vy = oy + (y + state.scrollY) * state.zoom.value;
+    const vr = ox + (right + state.scrollX) * state.zoom.value;
     selectionRef.current = {
-      ids: chosen.map((e) => e.id),
-      count: chosen.length,
-      textCount: chosen.filter((e) => e.type === 'text').length,
+      ids: editingRef.current ? [editingRef.current.id] : chosen.map((e) => e.id),
+      count: editingRef.current ? 1 : chosen.length,
+      textCount: editingRef.current ? 1 : chosen.filter((e) => textModel(e)).length,
       locked: !!chosen.length && chosen.every((e) => e.locked),
-      label: (text?.text || 'Объект').slice(0, 80),
+      label: (m?.text || 'Объект').slice(0, 80),
       color:
-        first?.strokeColor === 'transparent'
-          ? text?.strokeColor || state.currentItemStrokeColor
-          : first?.strokeColor,
-      width: first?.strokeWidth,
+        m?.color ||
+        (first?.strokeColor === 'transparent' ? state.currentItemStrokeColor : first?.strokeColor),
+      width: first?.type === 'freedraw' ? first.strokeWidth * inkScale : first?.strokeWidth,
       fill: first?.backgroundColor,
       fontFamily: text?.fontFamily,
-      fontSize: text?.fontSize,
-      ...(text && chosen.filter((e) => e.type === 'text').length === 1 && text.text.length <= 2000
-        ? { text: text.originalText || text.text }
-        : {}),
+      fontSize: m?.fontSize,
+      ...(m ? { text: m.text } : {}),
       figure,
+      type: first?.type,
+      isNote: chosen.some((e) => e.customData?.sticker?.kind === 'note'),
+      bounds: {
+        toolbarX: Math.max(70, Math.min(vx, state.width - 650)),
+        toolbarY: Math.max(10, vy - 58),
+        menuX: Math.max(74, Math.min(vr + 10, state.width - 248)),
+        menuY: Math.max(12, Math.min(vy, state.height - 320)),
+      },
     };
     const deck = chosen.length === 1 && presentationOf(chosen[0]) ? chosen[0].id : '';
     if (!readOnly && !previewScene.current && deck !== selectedDeckRef.current) {
@@ -1054,6 +1101,194 @@ function PageEditor({
   };
   const diff = () =>
     current.current.filter((e) => fingerprint(e) !== fingerprint(base.current.get(e.id)));
+  const editingDirty = () => {
+    const value = editingRef.current;
+    if (!value) return false;
+    const present = editor?.getSceneElements().find((e) => e.id === value.id);
+    if (!present && !value.model.text.trim() && !value.model.containerId) return false;
+    return JSON.stringify(present?.customData?.richText) !== JSON.stringify(value.model);
+  };
+  const commitText = (value: TextEditing, select = true): Promise<void> => {
+    if (!editor || readOnly || previewScene.current) return Promise.resolve();
+    const present = editor.getSceneElements().find((e) => e.id === value.id);
+    if (!value.model.text.trim() && !value.model.containerId) {
+      if (present && !present.locked) {
+        textEpoch.current.set(value.id, (textEpoch.current.get(value.id) || 0) + 1);
+        editor.updateScene({
+          elements: editor
+            .getSceneElementsIncludingDeleted()
+            .map((e) => (e.id === value.id ? changedElement(e, { isDeleted: true }) : e)),
+          appState: { selectedElementIds: {} },
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        });
+      }
+      return Promise.resolve();
+    }
+    if (present?.locked) return Promise.resolve();
+    if (present && JSON.stringify(textModel(present)) === JSON.stringify(value.model)) {
+      if (select && (!editingRef.current || editingRef.current.id === value.id)) {
+        const ids = objectSelection(editor.getSceneElements(), value.id);
+        editor.updateScene({
+          appState: { selectedElementIds: Object.fromEntries(ids.map((id) => [id, true])) },
+          captureUpdate: CaptureUpdateAction.NEVER,
+        });
+      }
+      return Promise.resolve();
+    }
+    const epoch = (textEpoch.current.get(value.id) || 0) + 1;
+    textEpoch.current.set(value.id, epoch);
+    const task = (async () => {
+      const rendered = await renderText(value.model);
+      await waitForGestureEnd();
+      if (!mounted.current || !ready.current || textEpoch.current.get(value.id) !== epoch) return;
+      const old = editor.getSceneElementsIncludingDeleted().find((e) => e.id === value.id);
+      if (old?.isDeleted || old?.locked) return;
+      const parent = value.model.containerId
+        ? editor.getSceneElements().find((e) => e.id === value.model.containerId)
+        : undefined;
+      const groupIds = parent
+        ? parent.groupIds.length
+          ? [...parent.groupIds]
+          : [crypto.randomUUID()]
+        : old?.groupIds || value.groupIds || [];
+      const fileId = crypto.randomUUID(),
+        file = {
+          id: fileId,
+          dataURL: rendered.dataURL,
+          mimeType: 'image/png',
+          created: Date.now(),
+        } as any;
+      fileData.current = { ...fileData.current, [fileId]: file };
+      editor.addFiles([file]);
+      const image = convertToExcalidrawElements(
+        [
+          {
+            type: 'image',
+            id: value.id,
+            fileId,
+            status: 'saved',
+            x: old?.x ?? value.x,
+            y: old?.y ?? value.y,
+            width: rendered.width,
+            height: rendered.height,
+            angle: old?.angle ?? value.angle,
+            groupIds,
+            strokeColor: rendered.model.color,
+            opacity: old?.opacity ?? 100,
+            customData: {
+              ...old?.customData,
+              ...value.customData,
+              richText: rendered.model,
+              richTextSize: { width: rendered.width, height: rendered.height },
+              ...(parent ? { stickerAnnotation: { stickerId: parent.id } } : {}),
+            },
+          },
+        ] as any,
+        { regenerateIds: false },
+      )[0];
+      const next = old ? changedElement(old, { ...image, index: old.index }) : image;
+      for (const key of [
+        'text',
+        'originalText',
+        'fontFamily',
+        'fontSize',
+        'lineHeight',
+        'containerId',
+        'autoResize',
+        'textAlign',
+        'verticalAlign',
+      ])
+        delete (next as any)[key];
+      const all = editor.getSceneElementsIncludingDeleted().map((e) =>
+        e.id === next.id
+          ? next
+          : parent && e.id === parent.id
+            ? changedElement(e, {
+                groupIds,
+                boundElements: e.boundElements?.filter((b) => b.id !== next.id) || null,
+              })
+            : e,
+      );
+      if (!old) all.push(next);
+      editor.updateScene({
+        elements: all,
+        ...(select &&
+        (!editingRef.current || editingRef.current.id === value.id) &&
+        editor.getAppState().activeTool.type !== 'freedraw'
+          ? {
+              appState: {
+                selectedElementIds: { [next.id]: true, ...(parent ? { [parent.id]: true } : {}) },
+              },
+            }
+          : {}),
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      });
+      textDrafts.current.delete(value.id);
+    })();
+    textTasks.current.add(task);
+    task.then(
+      () => textTasks.current.delete(task),
+      () => textTasks.current.delete(task),
+    );
+    return task;
+  };
+  const editText = (value: TextEditing | null) => {
+    editingRef.current = value;
+    setTextEditing(value);
+    if (value) {
+      onSave('saving');
+      clearTimeout(persistTimer.current);
+      persistTimer.current = setTimeout(() => {
+        persistTimer.current = undefined;
+        void persist();
+      }, 120);
+      clearTimeout(textAutosave.current);
+      textAutosave.current = setTimeout(() => {
+        if (editingRef.current)
+          void commitText(editingRef.current, false).catch((e) => onSave('error', e.message));
+      }, 600);
+    }
+    if (editor) reportTools(editor.getSceneElementsIncludingDeleted(), editor.getAppState());
+  };
+  const closeText = () => {
+    clearTimeout(textAutosave.current);
+    const value = editingRef.current;
+    editText(null);
+    textTool.current = false;
+    editor?.setActiveTool({ type: 'selection' });
+    if (value)
+      void commitText(value)
+        .then(() => {
+          if (!diff().length && !pendingOperation.current && !textTasks.current.size)
+            onSave('saved');
+          void persist();
+        })
+        .catch((e) => onSave('error', e.message));
+  };
+  const beginTextEditing = (element: any) => {
+    if (!element || element.locked || readOnly || previewScene.current) return;
+    const target = textModel(element)
+      ? element
+      : editor
+          ?.getSceneElements()
+          .find(
+            (e) =>
+              e.customData?.richText?.containerId === element.id ||
+              (e.type === 'text' && e.containerId === element.id),
+          );
+    const model = target && textModel(target);
+    if (!model || !target || target.locked) return;
+    textTool.current = false;
+    editor?.setActiveTool({ type: 'selection' });
+    editText({
+      id: target.id,
+      x: target.x,
+      y: target.y,
+      angle: target.angle,
+      model,
+      groupIds: [...target.groupIds],
+    });
+  };
   const persist = (): Promise<void> => {
     if (readOnly) return Promise.resolve();
     if (persistTask.current) {
@@ -1066,12 +1301,13 @@ function PageEditor({
         await waitForGestureEnd();
         await writeDraft(
           key,
-          diff().length || pendingOperation.current
+          diff().length || pendingOperation.current || editingDirty()
             ? {
                 elements: current.current,
                 base: [...base.current.values()],
                 files: fileData.current,
                 pending: pendingOperation.current,
+                ...(editingRef.current ? { richTextDraft: editingRef.current } : {}),
               }
             : null,
         );
@@ -1118,15 +1354,20 @@ function PageEditor({
     }
     publishSelection(elements, state);
     const nextTool: BoardToolState = {
-      type: figureKind.current
-        ? 'figure'
-        : state.activeTool.type === 'freedraw'
-          ? state.currentItemOpacity < 100
-            ? 'marker'
-            : 'pen'
-          : state.activeTool.type,
+      type:
+        editingRef.current || textTool.current
+          ? 'text'
+          : figureKind.current
+            ? 'figure'
+            : state.activeTool.type === 'freedraw'
+              ? inkTool.current
+              : state.activeTool.type,
       color: state.currentItemStrokeColor,
-      width: selectionRef.current.width || state.currentItemStrokeWidth,
+      width: selectionRef.current.count
+        ? selectionRef.current.width || state.currentItemStrokeWidth
+        : state.activeTool.type === 'freedraw'
+          ? state.currentItemStrokeWidth * inkScale
+          : state.currentItemStrokeWidth,
       zoom: state.zoom.value,
       readOnly: readOnly || !!previewScene.current,
       fontFamily: selectionRef.current.fontFamily || state.currentItemFontFamily,
@@ -1134,6 +1375,15 @@ function PageEditor({
       lineKind: lineKind.current,
       figureKind: figureKind.current || undefined,
       selection: selectionRef.current,
+      opacity:
+        elements.find((e) => selectionRef.current.ids.includes(e.id))?.opacity ??
+        state.currentItemOpacity,
+      fill: state.currentItemBackgroundColor,
+      textStyle:
+        editingRef.current?.model ||
+        textModel(
+          elements.find((e) => selectionRef.current.ids.includes(e.id) && textModel(e)) || {},
+        ),
     };
     const stamp = JSON.stringify(nextTool);
     if (stamp !== toolStamp.current) {
@@ -1156,7 +1406,12 @@ function PageEditor({
           })
         : [e],
     );
-    const captured = captureCanvas(decorated, before);
+    const tagged = decorated.map((e) =>
+      e.type === 'freedraw' && !e.isDeleted && !oldIds.has(e.id) && !e.customData?.inkTool
+        ? changedElement(e, { customData: { ...e.customData, inkTool: inkTool.current } })
+        : e,
+    );
+    const captured = captureCanvas(tagged, before);
     const next = new Map(captured.map((e) => [e.id, e]));
     const index = new Map(before.map((e) => [e.id, e]));
     for (const e of base.current.values())
@@ -1250,6 +1505,7 @@ function PageEditor({
           scene = [...merged.values()];
           fileData.current = draft.files;
           pendingOperation.current = draft.pending || null;
+          recoveredText.current = draft.richTextDraft;
         }
         if (!readOnly) scene = repairCanvasGeometry(scene);
         const recovery = await readDraft(`${key}:conflict`).catch(() => undefined);
@@ -1319,6 +1575,8 @@ function PageEditor({
     if (readOnly || !ready.current || running.current) return;
     await waitForGestureEnd();
     if (!ready.current || running.current) return;
+    if (editingRef.current) await commitText(editingRef.current, false);
+    if (textTasks.current.size) await Promise.all([...textTasks.current]);
     clearTimeout(timer.current);
     timer.current = undefined;
     const repaired = repairOfflineDraft({
@@ -1351,7 +1609,7 @@ function PageEditor({
             if (knownFiles.current.has(fileId)) continue;
             const f = fileData.current[fileId as keyof BinaryFiles];
             if (!f) throw new Error('Изображение ещё загружается');
-            const blob = await (await fetch(f.dataURL)).blob();
+            const blob = dataUrlBlob(f.dataURL);
             await upload(blob, {
               boardId: board.id,
               excalidrawId: fileId,
@@ -1424,6 +1682,12 @@ function PageEditor({
       renderScene();
       ready.current = true;
       onReady();
+      if (recoveredText.current && !readOnly) {
+        const value = recoveredText.current;
+        recoveredText.current = undefined;
+        editText(value);
+        void commitText(value, false).catch((e) => onSave('error', e.message));
+      }
       const visible = projectCanvas(current.current).filter((e) => !e.isDeleted);
       if (visible.length)
         editor.scrollToContent(restoreElements(visible, null), {
@@ -1542,7 +1806,13 @@ function PageEditor({
       void flush();
     };
     const close = (e: BeforeUnloadEvent) => {
-      if (pointerDown.current || diff().length || pendingOperation.current) {
+      if (
+        pointerDown.current ||
+        diff().length ||
+        pendingOperation.current ||
+        textTasks.current.size ||
+        editingDirty()
+      ) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -1604,11 +1874,161 @@ function PageEditor({
       setSwitching('');
     }
   };
+  const renderExportCanvas = async (options: BoardExportOptions, preview = false) => {
+    if (!editor) throw new Error('Доска загружается');
+    await waitForGestureEnd();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const source =
+      previewScene.current ||
+      captureCanvas(editor.getSceneElementsIncludingDeleted(), current.current, {
+        attachNew: false,
+        transform: false,
+      });
+    let elements = projectCanvas(source).filter((e) => !e.isDeleted);
+    if (!options.annotations)
+      elements = elements.filter(
+        (e) =>
+          !e.customData?.sticker &&
+          !e.customData?.stickerAnnotation &&
+          !e.customData?.slideAnnotation &&
+          !e.customData?.pictureSticker &&
+          !e.containerId,
+      );
+    if (options.scope === 'selection') {
+      const ids = new Set(selectionRef.current.ids);
+      for (const id of [...ids]) for (const child of objectSelection(source, id)) ids.add(child);
+      for (const e of elements)
+        if (
+          ids.has(e.customData?.stickerAnnotation?.stickerId) ||
+          ids.has(e.customData?.slideAnnotation?.presentationId)
+        )
+          ids.add(e.id);
+      elements = elements.filter((e) => ids.has(e.id));
+    }
+    const app = editor.getAppState();
+    const area =
+      options.scope === 'visible'
+        ? {
+            x: -app.scrollX,
+            y: -app.scrollY,
+            width: app.width / app.zoom.value,
+            height: app.height / app.zoom.value,
+          }
+        : (() => {
+            const b = elements.length ? getCommonBounds(elements) : [0, 0, 800, 500];
+            return {
+              x: b[0] - 24,
+              y: b[1] - 24,
+              width: Math.max(1, b[2] - b[0]) + 48,
+              height: Math.max(1, b[3] - b[1]) + 48,
+            };
+          })();
+    if (options.scope === 'visible')
+      elements = elements.filter(
+        (e) =>
+          e.x + e.width >= area.x &&
+          e.y + e.height >= area.y &&
+          e.x <= area.x + area.width &&
+          e.y <= area.y + area.height,
+      );
+    if (!elements.length && !options.comments?.length)
+      throw new Error(
+        options.scope === 'selection'
+          ? 'Выделите объекты для экспорта'
+          : 'В выбранной области пока нет объектов',
+      );
+    await loadFiles(elements, editor);
+    const measure = document.createElement('canvas').getContext('2d')!;
+    measure.font = '13px Onest, Arial';
+    const commentWidth = Math.max(140, Math.min(900, area.width) - 32),
+      comments = (options.comments || []).map((c) => ({
+        name: c.name,
+        lines: wrapText(c.body, (s) => measure.measureText(s).width, commentWidth),
+      }));
+    const commentHeight = comments.length
+      ? 56 + comments.reduce((n, c) => n + 28 + c.lines.length * 19, 0)
+      : 0;
+    const targetHeight = area.height + commentHeight,
+      scale = preview
+        ? Math.min(380 / area.width, 200 / targetHeight)
+        : Math.min(
+            options.scale,
+            12000 / Math.max(area.width, targetHeight),
+            Math.sqrt(20_000_000 / (area.width * targetHeight)),
+          );
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.ceil(area.width * scale));
+    canvas.height = Math.max(1, Math.ceil(targetHeight * scale));
+    const ctx = canvas.getContext('2d')!;
+    paintBackground(
+      ctx,
+      canvas.width,
+      Math.ceil(area.height * scale),
+      previewBackground || board.background || 'white',
+      -area.x * scale,
+      -area.y * scale,
+      scale,
+    );
+    if (elements.length) {
+      const bounds = getCommonBounds(elements),
+        w = bounds[2] - bounds[0] + 48,
+        h = bounds[3] - bounds[1] + 48,
+        nativeScale = Math.min(scale, 12000 / Math.max(w, h), Math.sqrt(20_000_000 / (w * h)));
+      const rendered = await exportToCanvas({
+        elements,
+        files: fileData.current,
+        appState: { ...app, exportBackground: false, exportWithDarkMode: false },
+        exportPadding: 24,
+        getDimensions: (width: number, height: number) => ({
+          width: Math.max(1, Math.ceil(width * nativeScale)),
+          height: Math.max(1, Math.ceil(height * nativeScale)),
+          scale: nativeScale,
+        }),
+      });
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, canvas.width, area.height * scale);
+      ctx.clip();
+      ctx.drawImage(
+        rendered,
+        (bounds[0] - 24 - area.x) * scale,
+        (bounds[1] - 24 - area.y) * scale,
+        w * scale,
+        h * scale,
+      );
+      ctx.restore();
+    }
+    if (comments.length) {
+      ctx.save();
+      ctx.scale(scale, scale);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, area.height, area.width, commentHeight);
+      ctx.fillStyle = '#11162e';
+      ctx.font = '700 16px Onest, Arial';
+      let y = area.height + 30;
+      ctx.fillText('Комментарии к занятию', 16, y);
+      y += 26;
+      for (const c of comments) {
+        ctx.font = '700 12px Onest, Arial';
+        ctx.fillText(c.name, 16, y);
+        y += 20;
+        ctx.font = '13px Onest, Arial';
+        for (const line of c.lines) {
+          ctx.fillText(line, 16, y);
+          y += 19;
+        }
+        y += 8;
+      }
+      ctx.restore();
+    }
+    return canvas;
+  };
   useEffect(() => {
     if (!editor) return;
     const add = (skeletons: any[], select = false) => {
       if (readOnly || previewScene.current) return [];
       figureKind.current = null;
+      textTool.current = false;
       setActiveFigure(null);
       retainedSelection.current = [];
       const elements = convertToExcalidrawElements(skeletons, { regenerateIds: false });
@@ -1651,39 +2071,41 @@ function PageEditor({
     handleRef.current = {
       flush,
       revision: () => revision.current,
-      isSaved: () => !diff().length && !pendingOperation.current,
+      isSaved: () =>
+        !diff().length && !pendingOperation.current && !textTasks.current.size && !editingDirty(),
       setTool(type) {
         if (readOnly || previewScene.current) return;
         figureKind.current = null;
         setActiveFigure(null);
         retainedSelection.current = [];
-        const ink = type === 'pen' || type === 'marker',
-          profile = type === 'marker' ? inkProfiles.current.marker : inkProfiles.current.pen;
-        const previous = editor.getAppState();
+        const ink = type === 'pen' || type === 'marker';
+        textTool.current = type === 'text';
+        if (ink) inkTool.current = type;
+        const profile = inkProfiles.current[inkTool.current];
         editor.updateScene({
           appState: {
-            currentItemOpacity: type === 'marker' ? 30 : 100,
-            currentItemStrokeWidth: previous.currentItemStrokeWidth,
-            currentItemStrokeColor: previous.currentItemStrokeColor,
-            currentItemStrokeStyle: previous.currentItemStrokeStyle,
-            ...(ink
-              ? {
-                  currentItemStrokeWidth: profile.width,
-                  currentItemStrokeColor: profile.color,
-                  currentItemStrokeStyle: 'solid' as const,
-                }
-              : {}),
             selectedElementIds: {},
+            currentItemOpacity: ink ? profile.opacity : 100,
+            currentItemStrokeWidth: ink
+              ? profile.width / inkScale
+              : editor.getAppState().currentItemStrokeWidth,
+            currentItemStrokeColor: ink
+              ? profile.color
+              : editor.getAppState().currentItemStrokeColor,
+            currentItemStrokeStyle: ink ? 'solid' : editor.getAppState().currentItemStrokeStyle,
           },
         });
-        retainedSelection.current = [];
-        editor.setActiveTool({ type: (ink ? 'freedraw' : type) as any });
+        editor.setActiveTool(
+          type === 'text'
+            ? { type: 'custom', customType: 'board-text' }
+            : { type: (ink ? 'freedraw' : type) as any },
+        );
       },
       setColor(color) {
         if (!readOnly && !previewScene.current) {
           const state = editor.getAppState();
           if (state.activeTool.type === 'freedraw')
-            inkProfiles.current[state.currentItemOpacity < 100 ? 'marker' : 'pen'].color = color;
+            inkProfiles.current[inkTool.current].color = color;
           const ids = Object.fromEntries(selectionRef.current.ids.map((id) => [id, true]));
           editor.updateScene({
             appState: { currentItemStrokeColor: color },
@@ -1695,107 +2117,167 @@ function PageEditor({
         }
       },
       setWidth(width) {
-        if (!readOnly && !previewScene.current) {
-          width = Math.max(0.5, Math.min(40, width));
-          const state = editor.getAppState();
-          if (state.activeTool.type === 'freedraw')
-            inkProfiles.current[state.currentItemOpacity < 100 ? 'marker' : 'pen'].width = width;
-          const ids = Object.fromEntries(selectionRef.current.ids.map((id) => [id, true]));
-          editor.updateScene({
-            appState: { currentItemStrokeWidth: width },
-            elements: editor
-              .getSceneElementsIncludingDeleted()
-              .map((e) => (ids[e.id] && !e.locked ? changedElement(e, { strokeWidth: width }) : e)),
-            captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-          });
-        }
+        if (readOnly || previewScene.current) return;
+        const state = editor.getAppState(),
+          free = state.activeTool.type === 'freedraw',
+          range = free && inkTool.current === 'marker' ? markerSizes : penSizes;
+        width = Math.max(range.min, Math.min(range.max, width));
+        if (free) inkProfiles.current[inkTool.current].width = width;
+        const ids = new Set(selectionRef.current.ids);
+        editor.updateScene({
+          appState: { currentItemStrokeWidth: free ? width / inkScale : width },
+          elements: editor.getSceneElementsIncludingDeleted().map((e) =>
+            ids.has(e.id) && !e.locked
+              ? changedElement(e, {
+                  strokeWidth: e.type === 'freedraw' ? width / inkScale : width,
+                })
+              : e,
+          ),
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        });
+      },
+      setOpacity(opacity) {
+        if (readOnly || previewScene.current) return;
+        opacity = Math.max(5, Math.min(100, opacity));
+        if (editor.getAppState().activeTool.type === 'freedraw')
+          inkProfiles.current[inkTool.current].opacity = opacity;
+        const ids = new Set(selectionRef.current.ids);
+        editor.updateScene({
+          appState: { currentItemOpacity: opacity },
+          elements: editor
+            .getSceneElementsIncludingDeleted()
+            .map((e) => (ids.has(e.id) && !e.locked ? changedElement(e, { opacity }) : e)),
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        });
       },
       setLineKind(kind) {
         if (readOnly || previewScene.current) return;
         figureKind.current = null;
         setActiveFigure(null);
         retainedSelection.current = [];
+        textTool.current = false;
         lineKind.current = kind;
+        const state = editor.getAppState();
+        const width =
+          state.activeTool.type === 'freedraw'
+            ? state.currentItemStrokeWidth * inkScale
+            : state.currentItemStrokeWidth;
         editor.setActiveTool({ type: 'line' });
         editor.updateScene({
           appState: {
             currentItemOpacity: 100,
             currentItemStrokeStyle:
               kind === 'dashed' ? 'dashed' : kind === 'dotted' ? 'dotted' : 'solid',
+            currentItemStrokeWidth: Math.max(0.5, Math.min(6, width)),
             selectedElementIds: {},
           },
         });
       },
-      setTextStyle(style) {
+      async setTextStyle(style) {
         if (readOnly || previewScene.current) return;
-        const app = editor.getAppState(),
-          family = style.fontFamily || app.currentItemFontFamily,
-          size = Math.max(8, Math.min(200, style.fontSize || app.currentItemFontSize));
-        const changes = new Map<string, any>();
-        for (const e of selected()) {
-          if (e.type !== 'text' || e.locked) continue;
-          const fontFamily = style.fontFamily || e.fontFamily,
-            fontSize = style.fontSize || e.fontSize,
-            text = style.text ?? e.originalText ?? e.text;
-          const measured = convertToExcalidrawElements([
-            { type: 'text', x: e.x, y: e.y, text, fontFamily, fontSize },
-          ] as any)[0] as any;
-          changes.set(
-            e.id,
-            changedElement(e, {
-              text: measured.text,
-              originalText: text,
-              fontFamily,
-              fontSize,
-              lineHeight: measured.lineHeight,
-              width: measured.width,
-              height: measured.height,
-              autoResize: true,
-            }),
-          );
-          if (e.containerId) {
-            const parent = editor.getSceneElements().find((p) => p.id === e.containerId);
-            if (parent && !parent.locked) {
-              const container = convertToExcalidrawElements(
-                [
-                  {
-                    ...parent,
-                    label: { id: e.id, text, fontFamily, fontSize, strokeColor: e.strokeColor },
-                  },
-                ] as any,
-                { regenerateIds: false },
-              );
-              for (const part of container) {
-                const old = editor.getSceneElements().find((p) => p.id === part.id);
-                if (old)
-                  changes.set(
-                    part.id,
-                    changedElement(old, {
-                      ...part,
-                      customData: old.customData,
-                      version: old.version + 1,
-                    }),
-                  );
-              }
-            }
-          }
+        const patch = {
+          ...(style.fontFamily !== undefined ? { family: String(style.fontFamily) } : {}),
+          ...(style.fontSize ? { fontSize: style.fontSize } : {}),
+          ...(style.text !== undefined ? { text: style.text } : {}),
+          ...(style.color ? { color: style.color } : {}),
+          ...(style.bold !== undefined ? { bold: style.bold } : {}),
+          ...(style.italic !== undefined ? { italic: style.italic } : {}),
+          ...(style.underline !== undefined ? { underline: style.underline } : {}),
+          ...(style.textAlign ? { align: style.textAlign } : {}),
+        };
+        textDefaults.current = { ...textDefaults.current, ...patch, text: '' };
+        if (editingRef.current) {
+          editText({ ...editingRef.current, model: { ...editingRef.current.model, ...patch } });
+          return;
         }
+        const jobs = [];
+        for (const e of selected()) {
+          const original = textModel(e);
+          if (!original || e.locked) continue;
+          const model = { ...(textDrafts.current.get(e.id) || original), ...patch };
+          if (model.containerId) {
+            const parent = editor.getSceneElements().find((p) => p.id === model.containerId);
+            if (parent) model.maxWidth = Math.max(40, parent.width - 32);
+          }
+          textDrafts.current.set(e.id, model);
+          jobs.push(commitText({ id: e.id, x: e.x, y: e.y, angle: e.angle, model }));
+        }
+        await Promise.all(jobs);
+      },
+      editText() {
+        const target = selected().find((e) => textModel(e));
+        if (target && !target.locked) beginTextEditing(target);
+      },
+      objectAction(action) {
+        if (readOnly || previewScene.current) return;
+        const all = editor.getSceneElementsIncludingDeleted(),
+          ids = new Set(selectionRef.current.ids);
+        for (const id of [...ids]) for (const child of objectSelection(all, id)) ids.add(child);
+        if (action === 'duplicate') {
+          const copies = duplicateObjects(all, ids);
+          const next = restoreElements([...all, ...copies], null);
+          editor.updateScene({
+            elements: next,
+            appState: { selectedElementIds: Object.fromEntries(copies.map((e) => [e.id, true])) },
+            captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+          });
+          return;
+        }
+        if (action === 'delete') {
+          for (const e of all)
+            if (
+              ids.has(e.customData?.stickerAnnotation?.stickerId) ||
+              ids.has(e.customData?.slideAnnotation?.presentationId)
+            )
+              ids.add(e.id);
+          retainedSelection.current = [];
+          editor.updateScene({
+            elements: all.map((e) => (ids.has(e.id) ? changedElement(e, { isDeleted: true }) : e)),
+            appState: { selectedElementIds: {} },
+            captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+          });
+          return;
+        }
+        const moved = all.filter((e) => ids.has(e.id)).map((e) => ({ ...e, index: undefined })),
+          rest = all.filter((e) => !ids.has(e.id));
+        const ordered = restoreElements(
+            (action === 'front' ? [...rest, ...moved] : [...moved, ...rest]) as any,
+            null,
+          ),
+          old = new Map(all.map((e) => [e.id, e]));
         editor.updateScene({
-          elements: editor.getSceneElementsIncludingDeleted().map((e) => changes.get(e.id) || e),
-          appState: { currentItemFontFamily: family, currentItemFontSize: size },
+          elements: ordered.map((e) =>
+            e.index !== old.get(e.id)?.index
+              ? changedElement(old.get(e.id), { index: e.index })
+              : old.get(e.id)!,
+          ),
           captureUpdate: CaptureUpdateAction.IMMEDIATELY,
         });
       },
       setFill(color) {
+        if (readOnly || previewScene.current) return;
+        editor.updateScene({
+          appState: { currentItemBackgroundColor: color, currentItemFillStyle: 'solid' },
+        });
         modify((e) => changedElement(e, { backgroundColor: color, fillStyle: 'solid' }));
       },
       setFigureKind(kind) {
         if (readOnly || previewScene.current) return;
         figureKind.current = kind;
+        textTool.current = false;
         setActiveFigure(kind);
         retainedSelection.current = [];
         editor.setActiveTool({ type: 'custom', customType: 'board-figure' });
-        editor.updateScene({ appState: { selectedElementIds: {}, currentItemOpacity: 100 } });
+        editor.updateScene({
+          appState: {
+            selectedElementIds: {},
+            currentItemOpacity: 100,
+            currentItemStrokeWidth: Math.min(
+              3,
+              Math.max(0.5, editor.getAppState().currentItemStrokeWidth),
+            ),
+          },
+        });
       },
       ungroup() {
         modify((e) =>
@@ -1805,63 +2287,92 @@ function PageEditor({
           }),
         );
       },
-      addSticker(kind, color, text = 'Новая заметка') {
+      async addSticker(kind, color, text = '') {
+        if (readOnly || previewScene.current) return;
         const { x, y } = center(),
-          group = crypto.randomUUID();
-        const parts =
-          kind === 'note'
-            ? [
-                {
-                  type: 'rectangle',
-                  x: 0,
-                  y: 0,
-                  width: 240,
-                  height: 180,
-                  backgroundColor: color,
-                  fillStyle: 'solid',
-                  strokeColor: 'transparent',
-                  roughness: 0,
-                  roundness: { type: 3 },
-                  customData: { sticker: { kind: 'note' } },
-                  label: { text, fontFamily: 5, fontSize: 24, strokeColor: '#252846' },
-                },
-              ]
-            : badgeParts(kind, color);
-        add(
-          parts.map((e) => ({
-            ...e,
-            id: crypto.randomUUID(),
-            x: x + e.x,
-            y: y + e.y,
-            groupIds: kind === 'note' ? [] : [group],
-          })),
+          group = crypto.randomUUID(),
+          id = crypto.randomUUID();
+        const parent = add(
+          [
+            {
+              id,
+              type: 'rectangle',
+              x,
+              y,
+              width: 240,
+              height: 180,
+              backgroundColor: color,
+              fillStyle: 'solid',
+              strokeColor: 'transparent',
+              roughness: 0,
+              roundness: { type: 3 },
+              groupIds: [group],
+              customData: { sticker: { kind: 'note' } },
+            },
+          ],
           true,
-        );
+        )[0];
+        const value: TextEditing = {
+          id: crypto.randomUUID(),
+          x: x + 12,
+          y: y + 12,
+          angle: 0,
+          model: { ...textDefaults.current, text, containerId: id, maxWidth: 208 },
+          groupIds: [group],
+        };
+        await commitText(value);
+        if (parent && !text)
+          beginTextEditing(editor.getSceneElements().find((e) => e.id === value.id));
       },
-      addFormula(text, title = 'Формула') {
-        const { x, y } = center();
+      async addPictureSticker(id) {
+        if (readOnly || previewScene.current) return;
+        const item = pictureStickers.find((s) => s.id === id);
+        if (!item) return;
+        const response = await fetch(item.src);
+        if (!response.ok) throw new Error('Не удалось загрузить стикер');
+        const blob = await response.blob(),
+          fileId = crypto.randomUUID(),
+          { x, y } = center();
+        const file = {
+          id: fileId,
+          dataURL: await blobDataUrl(blob),
+          mimeType: 'image/webp',
+          created: Date.now(),
+        } as any;
+        fileData.current = { ...fileData.current, [fileId]: file };
+        editor.addFiles([file]);
         add(
           [
             {
               id: crypto.randomUUID(),
-              type: 'text',
+              type: 'image',
               x,
               y,
-              text,
-              fontFamily: 2,
-              fontSize: 32,
-              strokeColor: editor.getAppState().currentItemStrokeColor,
-              roughness: 0,
-              customData: { formula: { title } },
+              width: 220,
+              height: 220,
+              fileId,
+              status: 'saved',
+              customData: { pictureSticker: { id: item.id, name: item.name } },
             },
           ],
           true,
         );
       },
+      async addFormula(text, title = 'Формула') {
+        const { x, y } = center();
+        await commitText({
+          id: crypto.randomUUID(),
+          x,
+          y,
+          angle: 0,
+          model: { ...textDefaults.current, text, fontSize: 28 },
+          customData: { formula: { title } },
+        });
+      },
       lockSelection() {
         if (readOnly || previewScene.current) return;
         const chosen = selected(),
-          ids = new Set(chosen.map((e) => e.id));
+          ids = new Set(chosen.flatMap((e) => objectSelection(editor.getSceneElements(), e.id)));
         for (const e of chosen) {
           if (e.type === 'text' && e.containerId) ids.add(e.containerId);
           for (const b of e.boundElements || []) if (b.type === 'text') ids.add(b.id);
@@ -2035,7 +2546,12 @@ function PageEditor({
           },
         ]);
       },
-      async export(type) {
+      async previewExport(options) {
+        if (textTasks.current.size) await Promise.all([...textTasks.current]);
+        const canvas = await renderExportCanvas(options, true);
+        return canvas.toDataURL('image/png');
+      },
+      async export(type, options = defaultExport) {
         const elements = editor.getSceneElements(),
           appState = editor.getAppState(),
           files = editor.getFiles();
@@ -2071,45 +2587,19 @@ function PageEditor({
           );
           return;
         }
-        if (!elements.length) throw new Error('На холсте пока нет объектов для экспорта');
-        const rendered = await exportToCanvas({
-          elements,
-          appState: {
-            ...appState,
-            exportBackground: false,
-            exportWithDarkMode: false,
-            exportScale: 1,
-          },
-          files,
-          exportPadding: 24,
-          getDimensions: (width: number, height: number) => ({ width, height, scale: 1 }),
-        });
-        const canvas = document.createElement('canvas');
-        canvas.width = rendered.width;
-        canvas.height = rendered.height;
-        const ctx = canvas.getContext('2d')!;
-        const [minX, minY] = getCommonBounds(elements);
-        paintBackground(
-          ctx,
-          canvas.width,
-          canvas.height,
-          previewBackground || board.background || 'white',
-          24 - minX,
-          24 - minY,
-        );
-        ctx.drawImage(rendered, 0, 0);
+        const canvas = await renderExportCanvas(options);
         const blob = await canvasBlob(canvas);
         if (type === 'png') download(blob, `${name}.png`);
         else {
           const pdf = await PDFDocument.create(),
             image = await pdf.embedPng(await blob.arrayBuffer()),
-            scale = Math.min(1, 14400 / Math.max(image.width, image.height)),
-            p = pdf.addPage([image.width * scale, image.height * scale]);
-          p.drawImage(image, {
-            x: 0,
-            y: 0,
-            width: image.width * scale,
-            height: image.height * scale,
+            layout = pdfLayout(image.width, image.height, options.paper, options.orientation),
+            page = pdf.addPage([layout.pageWidth, layout.pageHeight]);
+          page.drawImage(image, {
+            x: layout.x,
+            y: layout.y,
+            width: layout.width,
+            height: layout.height,
           });
           download(
             new Blob([new Uint8Array(await pdf.save())], { type: 'application/pdf' }),
@@ -2167,7 +2657,19 @@ function PageEditor({
       setPanning(true);
     } else if (event.button === 0 && event.isPrimary && !readOnly && !previewScene.current) {
       const point = viewportCoordsToSceneCoords(event, state);
-      if (figureKind.current) {
+      if (textTool.current) {
+        const hit = canvasHit(editor.getSceneElements(), point, 6 / state.zoom.value);
+        if (hit && (textModel(hit) || hit.customData?.sticker)) beginTextEditing(hit);
+        else
+          editText({
+            id: crypto.randomUUID(),
+            x: point.x,
+            y: point.y,
+            angle: 0,
+            model: { ...textDefaults.current, text: '' },
+          });
+        gesture = { kind: 'text', id: event.pointerId };
+      } else if (figureKind.current) {
         gesture = {
           kind: 'figure',
           id: event.pointerId,
@@ -2177,6 +2679,7 @@ function PageEditor({
           constrain: event.shiftKey,
           color: state.currentItemStrokeColor,
           width: state.currentItemStrokeWidth,
+          fill: state.currentItemBackgroundColor,
         };
       } else if (state.activeTool.type === 'selection') {
         const elements = editor.getSceneElements();
@@ -2254,6 +2757,8 @@ function PageEditor({
         id: crypto.randomUUID(),
         strokeColor: gesture.color,
         strokeWidth: gesture.width,
+        backgroundColor: gesture.fill,
+        fillStyle: 'solid',
         groupIds: [group],
         customData: { boardFigure: { id: group, spec, part: i } },
       })),
@@ -2301,6 +2806,10 @@ function PageEditor({
         if (hit?.locked) {
           event.preventDefault();
           event.stopPropagation();
+        } else if (hit && (textModel(hit) || hit.customData?.sticker)) {
+          event.preventDefault();
+          event.stopPropagation();
+          beginTextEditing(hit);
         }
       }}
     >
@@ -2385,6 +2894,15 @@ function PageEditor({
           </WelcomeScreen.Center>
         </WelcomeScreen>
       </Excalidraw>
+      {textEditing && (
+        <RichTextEditor
+          value={textEditing}
+          view={view}
+          onChange={(model) => editText({ ...editingRef.current!, model })}
+          onCommit={closeText}
+          onCancel={closeText}
+        />
+      )}
       {activeFigure && (
         <div className="board-drawing-hint" role="status">
           {figures.find((f) => f.id === activeFigure)?.name} · протяните по холсту

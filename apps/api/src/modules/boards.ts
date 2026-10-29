@@ -3,7 +3,11 @@ import { z } from 'zod';
 import type { Context } from '../app';
 import { boardAccess, requireThat, studentAccess, hashToken, token, audit } from '../security';
 import { sceneChangeSchema, type ElementData } from '../../../../packages/contracts';
-import { unifyLegacyScenes, presentationOf } from '../../../../packages/contracts/canvas';
+import {
+  unifyLegacyScenes,
+  presentationOf,
+  orderCanvas,
+} from '../../../../packages/contracts/canvas';
 
 const idParam = (params: unknown, field: string) =>
   z.record(z.string(), z.string()).parse(params)[field];
@@ -256,6 +260,20 @@ export async function boardRoutes({ app, db, config, io }: Context) {
         400,
         'Недопустимая ссылка',
       );
+      const rich = (e.customData as any)?.richText;
+      if (rich)
+        z.object({
+          text: z.string().max(20000),
+          family: z.string().max(64),
+          fontSize: z.number().finite().min(8).max(200),
+          bold: z.boolean(),
+          italic: z.boolean(),
+          underline: z.boolean(),
+          align: z.enum(['left', 'center', 'right']),
+          color: z.string().max(80),
+          maxWidth: z.number().finite().positive().max(1800).optional(),
+          containerId: z.string().max(128).optional(),
+        }).parse(rich);
     }
     const result = await db.transaction(async (tx) => {
       const page = (await tx.query('SELECT * FROM pages WHERE id=$1 FOR UPDATE', [pageId])).rows[0];
@@ -344,7 +362,7 @@ export async function boardRoutes({ app, db, config, io }: Context) {
         );
         await tx.query('UPDATE pages SET scene=$2,revision=$3 WHERE id=$1', [
           pageId,
-          JSON.stringify([...scene.values()]),
+          JSON.stringify(orderCanvas([...scene.values()])),
           revision,
         ]);
         await tx.query('UPDATE boards SET updated_at=now() WHERE id=$1', [page.board_id]);

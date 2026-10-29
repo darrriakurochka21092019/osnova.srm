@@ -79,12 +79,89 @@ export function canvasHit(elements: readonly any[], point: Point, tolerance: num
 export function objectSelection(elements: readonly any[], id: string): string[] {
   const hit = elements.find((e) => e.id === id && !e.isDeleted);
   if (!hit) return [];
-  const parent = hit.containerId ? elements.find((e) => e.id === hit.containerId) || hit : hit;
+  const containerId = hit.containerId || hit.customData?.richText?.containerId;
+  const parent = containerId ? elements.find((e) => e.id === containerId) || hit : hit;
   const group = parent.groupIds?.at(-1);
   const ids = new Set<string>([parent.id]);
   if (group)
     for (const e of elements) if (!e.isDeleted && e.groupIds?.includes(group)) ids.add(e.id);
   for (const e of elements)
     if (!e.isDeleted && e.containerId && ids.has(e.containerId)) ids.add(e.id);
+  for (const e of elements)
+    if (
+      !e.isDeleted &&
+      e.customData?.richText?.containerId &&
+      ids.has(e.customData.richText.containerId)
+    )
+      ids.add(e.id);
+  for (const e of elements)
+    if (!e.isDeleted && ids.has(e.customData?.stickerAnnotation?.stickerId)) ids.add(e.id);
   return [...ids];
+}
+
+export function duplicateObjects(
+  elements: readonly any[],
+  selected: ReadonlySet<string>,
+  uuid: () => string = () => crypto.randomUUID(),
+) {
+  const ids = new Set(selected);
+  for (const e of elements)
+    if (ids.has(e.id)) for (const id of objectSelection(elements, e.id)) ids.add(id);
+  for (const e of elements)
+    if (
+      !e.isDeleted &&
+      (ids.has(e.customData?.stickerAnnotation?.stickerId) ||
+        ids.has(e.customData?.slideAnnotation?.presentationId))
+    )
+      ids.add(e.id);
+  const originals = elements.filter((e) => !e.isDeleted && ids.has(e.id)),
+    mapping = new Map(originals.map((e) => [e.id, uuid()])),
+    groups = new Map<string, string>();
+  for (const e of originals)
+    for (const g of e.groupIds || []) if (!groups.has(g)) groups.set(g, uuid());
+  return originals.map((e) => {
+    const data = structuredClone(e.customData || {});
+    if (data.stickerAnnotation)
+      data.stickerAnnotation.stickerId =
+        mapping.get(data.stickerAnnotation.stickerId) || data.stickerAnnotation.stickerId;
+    if (data.slideAnnotation)
+      data.slideAnnotation.presentationId =
+        mapping.get(data.slideAnnotation.presentationId) || data.slideAnnotation.presentationId;
+    if (data.richText?.containerId)
+      data.richText.containerId =
+        mapping.get(data.richText.containerId) || data.richText.containerId;
+    if (data.boardFigure) data.boardFigure.id = groups.get(data.boardFigure.id) || uuid();
+    if (data.boardLine) data.boardLine.groupId = groups.get(data.boardLine.groupId) || uuid();
+    return {
+      ...structuredClone(e),
+      id: mapping.get(e.id),
+      x: e.x + 24,
+      y: e.y + 24,
+      index: undefined,
+      version: 1,
+      versionNonce: Math.floor(Math.random() * 1e9),
+      locked: false,
+      groupIds: (e.groupIds || []).map((g: string) => groups.get(g)),
+      customData: data,
+      ...(e.containerId ? { containerId: mapping.get(e.containerId) || e.containerId } : {}),
+      ...(e.boundElements
+        ? {
+            boundElements: e.boundElements
+              .filter((b: any) => mapping.has(b.id))
+              .map((b: any) => ({ ...b, id: mapping.get(b.id) })),
+          }
+        : {}),
+      ...Object.fromEntries(
+        ['startBinding', 'endBinding']
+          .filter((k) => e[k])
+          .map((k) => [
+            k,
+            mapping.has(e[k].elementId)
+              ? { ...e[k], elementId: mapping.get(e[k].elementId) }
+              : null,
+          ]),
+      ),
+      ...(e.frameId ? { frameId: mapping.get(e.frameId) || null } : {}),
+    };
+  });
 }
