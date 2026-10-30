@@ -6,7 +6,14 @@ export type OfflineDraft = {
   base: any[];
   files: Record<string, any>;
   pending?: { id: string; changes: any[] } | null;
-  richTextDraft?: { id: string; x: number; y: number; angle: number; model: any; groupIds?: string[] };
+  richTextDraft?: {
+    id: string;
+    x: number;
+    y: number;
+    angle: number;
+    model: any;
+    groupIds?: string[];
+  };
 };
 
 /** A rejected malformed operation must not keep replaying after the scene is fixed. */
@@ -57,7 +64,7 @@ function db() {
       blocked = true;
       reject(
         new Error(
-          'Закройте другие вкладки «Основы» и обновите эту страницу: локальное хранилище обновляется.',
+          'Закройте другие вкладки EduSpace и обновите эту страницу: локальное хранилище обновляется.',
         ),
       );
     };

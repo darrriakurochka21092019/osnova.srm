@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import { api, date, fileUrl, localInput, money, statusLabels, upload } from '../api';
 import { useApp } from '../store';
+import { Brand } from '../Brand';
 import {
   Avatar,
   Badge,
@@ -772,7 +773,7 @@ export function ReportsPage() {
       {print && (
         <Modal title="Отчёт готов к печати" wide onClose={() => setPrint(null)}>
           <article className="print-sheet">
-            <span className="print-brand">основа.</span>
+            <Brand className="print-brand" />
             <h1>{print.data.title}</h1>
             <p>
               {studentName(print.student_id)} · {print.data.month}

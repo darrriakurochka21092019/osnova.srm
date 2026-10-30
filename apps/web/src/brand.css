@@ -1,0 +1,11 @@
+.brand-logo {
+  display: inline-block;
+  width: 176px;
+  max-width: 100%;
+  height: auto;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.brand-logo--mark {
+  width: 36px;
+}

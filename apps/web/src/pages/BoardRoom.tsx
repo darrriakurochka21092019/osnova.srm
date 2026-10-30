@@ -44,6 +44,7 @@ import '@excalidraw/excalidraw/index.css';
 import '../board/board.css';
 import { api, date, fileUrl, upload, dataUrlBlob } from '../api';
 import { useApp } from '../store';
+import { Brand } from '../Brand';
 import {
   Avatar,
   Badge,
@@ -495,9 +496,7 @@ export default function BoardRoom(props: BoardRoomProps = {}) {
         <Link to="/boards" className="icon-btn" aria-label="Назад к доскам">
           <ArrowLeft size={21} />
         </Link>
-        <span className="board-logo">
-          о<span>.</span>
-        </span>
+        <Brand mark className="board-logo" />
         <div className="board-title">
           <button disabled={user.role !== 'teacher'} onClick={() => setRename(true)}>
             {board.title}
@@ -3073,9 +3072,7 @@ function PageEditor({
         <WelcomeScreen>
           <WelcomeScreen.Center>
             <WelcomeScreen.Center.Logo>
-              <span className="canvas-welcome-logo">
-                основа<span>.</span>
-              </span>
+              <Brand className="canvas-welcome-logo" />
             </WelcomeScreen.Center.Logo>
             <WelcomeScreen.Center.Heading>
               {previewing ? 'В этой версии холст пуст' : 'Каждый урок — новое открытие'}

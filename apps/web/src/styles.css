@@ -248,41 +248,6 @@ input[type='checkbox'] {
   background: #fff;
   height: 39px;
 }
-.logo {
-  font-size: 27px;
-  font-weight: 850;
-  letter-spacing: -1.4px;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  color: #242347;
-  line-height: 1;
-}
-.logo-dot {
-  color: var(--primary);
-  margin-left: -10px;
-}
-.logo-mark {
-  width: 23px;
-  height: 23px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 3px;
-  transform: rotate(-1deg);
-}
-.logo-mark i {
-  border-radius: 4px;
-  background: #6c5bf1;
-}
-.logo-mark i:nth-child(2) {
-  background: #a29af4;
-}
-.logo-mark i:nth-child(3) {
-  background: #a29af4;
-}
-.logo-mark i:nth-child(4) {
-  background: #6c5bf1;
-}
 .brand-link {
   display: block;
   padding: 12px 16px;
@@ -2251,8 +2216,9 @@ tr:last-child td {
   position: relative;
   overflow: hidden;
 }
-.auth-art > .logo {
+.auth-art > .brand-logo {
   align-self: flex-start;
+  width: 220px;
 }
 .auth-art h1 {
   font-size: 47px;
@@ -2387,9 +2353,9 @@ tr:last-child td {
   border-radius: 18px;
   border: 1px solid var(--line);
 }
-.join-page .logo {
+.join-page .brand-logo {
+  display: block;
   margin: 5px 0 30px;
-  display: flex;
 }
 .join-page .auth-card > .badge {
   display: inline-flex;
@@ -2437,10 +2403,11 @@ tr:last-child td {
   padding: 30px;
   background: white;
 }
-.print-brand {
-  font-size: 25px;
-  font-weight: 850;
-  color: #7360c4;
+.print-brand.brand-logo {
+  width: 180px;
+}
+.app-footer .brand-logo {
+  width: 100px;
 }
 .print-sheet h1 {
   margin: 35px 0 15px;
@@ -2599,12 +2566,8 @@ tr:last-child td {
   .brand-link {
     padding: 12px;
   }
-  .logo {
-    font-size: 24px;
-    gap: 8px;
-  }
-  .logo-dot {
-    margin-left: -8px;
+  .brand-link .brand-logo {
+    width: 145px;
   }
   .workspace-label {
     font-size: 9px;

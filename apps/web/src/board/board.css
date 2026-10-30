@@ -237,14 +237,8 @@
   padding: 0 20px;
   z-index: 15;
 }
-.board-logo {
-  font-size: 32px;
-  font-weight: 850;
-  color: #30274f;
-  line-height: 1;
-}
-.board-logo > span {
-  color: #8b6bdf;
+.board-logo.brand-logo {
+  width: 36px;
 }
 .board-title {
   min-width: 0;
@@ -404,15 +398,8 @@
   letter-spacing: -0.5px;
   max-width: 500px;
 }
-.canvas-welcome-logo {
-  font-family: 'Manrope Variable', Arial, sans-serif;
-  font-size: 50px;
-  letter-spacing: -2px;
-  color: #e1d6ec;
-  font-weight: 850;
-}
-.canvas-welcome-logo > span {
-  color: #cfb8e5;
+.canvas-welcome-logo.brand-logo {
+  width: 260px;
 }
 .canvas-welcome-text {
   font-family: 'Manrope Variable', Arial, sans-serif;
@@ -662,8 +649,8 @@ kbd {
   .board-action > svg:last-child:not(:first-child) {
     display: none;
   }
-  .canvas-welcome-logo {
-    font-size: 40px;
+  .canvas-welcome-logo.brand-logo {
+    width: 220px;
   }
   .board-room .excalidraw .welcome-screen-center__heading {
     font-size: 16px;

@@ -14,21 +14,10 @@ import {
 import { api } from '../api';
 import { useApp } from '../store';
 import { Button, FormError } from '../ui';
+import { Brand } from '../Brand';
 import type { Classroom, LessonParticipant, LessonMessage } from '../../../../packages/contracts';
 
-export function Brand() {
-  return (
-    <span className="osnova-brand">
-      <span className="osnova-symbol" aria-hidden="true">
-        <i />
-        <i />
-        <i />
-        <i />
-      </span>
-      <span>основа</span>
-    </span>
-  );
-}
+export { Brand };
 export function AccessExpired({ message, retry }: { message?: string; retry?: () => void }) {
   return (
     <main className="lesson-entry lesson-access-page">

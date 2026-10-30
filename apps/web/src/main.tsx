@@ -206,7 +206,7 @@ function Login({ onLogin }: { onLogin: () => Promise<void> }) {
               </Field>
             )}
             <FormError error={error} />
-            <SaveButton busy={busy} label={setup ? 'Создать пространство' : 'Войти в основу'} />
+            <SaveButton busy={busy} label={setup ? 'Создать пространство' : 'Войти в EduSpace'} />
           </form>
           {!setup && (
             <p className="auth-foot muted">
@@ -585,7 +585,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           </Routes>
         </main>
         <footer className="app-footer">
-          Основа <span>Всё для хорошего урока</span>
+          <Brand /> <span>Всё для хорошего урока</span>
           <span>{date(new Date(), { year: 'numeric' })} · МСК</span>
         </footer>
       </div>

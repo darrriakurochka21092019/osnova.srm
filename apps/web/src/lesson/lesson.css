@@ -1,32 +1,3 @@
-.osnova-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  color: #0c1238;
-  font-size: 29px;
-  line-height: 1;
-  font-weight: 850;
-  letter-spacing: -1.1px;
-  white-space: nowrap;
-}
-.osnova-symbol {
-  display: grid;
-  grid-template-columns: repeat(2, 13px);
-  gap: 3px;
-  transform: rotate(0deg);
-}
-.osnova-symbol i {
-  width: 13px;
-  height: 13px;
-  background: linear-gradient(135deg, #a69dff, #554bff);
-  border-radius: 4px;
-}
-.osnova-symbol i:nth-child(2) {
-  background: linear-gradient(135deg, #6658ff, #a599ff);
-}
-.osnova-symbol i:nth-child(3) {
-  background: linear-gradient(135deg, #a599ff, #5a52ed);
-}
 .lesson-entry {
   min-height: 100dvh;
   background: radial-gradient(ellipse at 30% 80%, #f3f1ff 0, transparent 52%), #f7f9fe;
@@ -41,18 +12,8 @@
   max-width: 1520px;
   margin: 0 auto 34px;
 }
-.lesson-entry-header .osnova-brand {
-  font-size: 40px;
-  gap: 12px;
-}
-.lesson-entry-header .osnova-symbol {
-  grid-template-columns: repeat(2, 17px);
-  gap: 4px;
-}
-.lesson-entry-header .osnova-symbol i {
-  width: 17px;
-  height: 17px;
-  border-radius: 6px;
+.lesson-entry-header .brand-logo {
+  width: 220px;
 }
 .lesson-back {
   display: flex;
@@ -414,8 +375,8 @@
   left: 4vw;
   top: 32px;
 }
-.lesson-entry-brand .osnova-brand {
-  font-size: 36px;
+.lesson-entry-brand .brand-logo {
+  width: 220px;
 }
 .lesson-ambient {
   position: absolute;
@@ -731,8 +692,8 @@
   z-index: 25;
   position: relative;
 }
-.lesson-room-header .osnova-brand {
-  font-size: 27px;
+.lesson-room-header .brand-logo {
+  width: 160px;
 }
 .lesson-header-divider {
   height: 24px;
@@ -2059,8 +2020,8 @@
   .lesson-entry-header {
     margin-bottom: 25px;
   }
-  .lesson-entry-header .osnova-brand {
-    font-size: 33px;
+  .lesson-entry-header .brand-logo {
+    width: 190px;
   }
   .lesson-entry-grid {
     gap: 20px;
@@ -2095,8 +2056,8 @@
     gap: 13px;
     padding: 0 16px;
   }
-  .lesson-room-header .osnova-brand {
-    font-size: 23px;
+  .lesson-room-header .brand-logo {
+    width: 140px;
   }
   .lesson-save > span {
     display: none;
@@ -2158,18 +2119,8 @@
     gap: 15px;
     margin-bottom: 22px;
   }
-  .lesson-entry-header .osnova-brand {
-    font-size: 28px;
-    gap: 8px;
-  }
-  .lesson-entry-header .osnova-symbol {
-    grid-template-columns: repeat(2, 12px);
-    gap: 3px;
-  }
-  .lesson-entry-header .osnova-symbol i {
-    width: 12px;
-    height: 12px;
-    border-radius: 4px;
+  .lesson-entry-header .brand-logo {
+    width: 155px;
   }
   .lesson-back {
     font-size: 10px;
@@ -2264,8 +2215,8 @@
     font-size: 9px;
     line-height: 1.6;
   }
-  .lesson-entry-brand .osnova-brand {
-    font-size: 28px;
+  .lesson-entry-brand .brand-logo {
+    width: 175px;
   }
   .lesson-access-page {
     padding: 100px 14px 25px;
@@ -2375,18 +2326,8 @@
     padding: 0 10px;
     gap: 10px;
   }
-  .lesson-room-header .osnova-brand {
-    font-size: 19px;
-    gap: 6px;
-  }
-  .lesson-room-header .osnova-symbol {
-    grid-template-columns: repeat(2, 9px);
-    gap: 2px;
-  }
-  .lesson-room-header .osnova-symbol i {
-    width: 9px;
-    height: 9px;
-    border-radius: 3px;
+  .lesson-room-header .brand-logo {
+    width: 115px;
   }
   .lesson-header-divider {
     height: 20px;
