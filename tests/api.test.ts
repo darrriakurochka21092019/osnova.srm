@@ -154,6 +154,50 @@ after(async () => {
   await rm(dataDir, { recursive: true, force: true });
 });
 
+test('remembering a login uses a persistent cookie; unchecked login uses a limited browser session', async () => {
+  for (const rememberMe of [undefined, true, false]) {
+    const r = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      headers: { origin },
+      payload: {
+        email: 'teacher@example.test',
+        password: 'test-password-2026',
+        ...(rememberMe === undefined ? {} : { rememberMe }),
+      },
+    });
+    assert.equal(r.statusCode, 200, r.body);
+    const cookie = String(r.headers['set-cookie']);
+    assert.match(cookie, /HttpOnly/i);
+    assert.match(cookie, /SameSite=Strict/i);
+    if (rememberMe === false) assert.doesNotMatch(cookie, /Max-Age|Expires=/i);
+    else assert.match(cookie, /Max-Age=1209600/i);
+    const token = cookie.split(';')[0];
+    const session = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/v1/me',
+      headers: { cookie: token },
+    });
+    assert.equal(session.statusCode, 200);
+    const sessions = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/sessions',
+      headers: { cookie: token },
+    });
+    const current = sessions.json().find((s: any) => s.current);
+    const hours = (Date.parse(current.expires_at) - Date.now()) / 3600000;
+    assert.ok(
+      hours > (rememberMe === false ? 23 : 335) && hours <= (rememberMe === false ? 24 : 336),
+    );
+    await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/logout',
+      headers: { origin, cookie: token },
+      payload: {},
+    });
+  }
+});
+
 test('bootstrap is single use; authentication and CSRF are enforced', async () => {
   assert.equal(
     (

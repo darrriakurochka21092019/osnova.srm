@@ -16,6 +16,7 @@ export async function createSession(
   secure: boolean,
   inviteId?: string,
   hours = 24 * 14,
+  persistent = true,
 ) {
   const raw = token();
   await db.query(
@@ -33,7 +34,7 @@ export async function createSession(
     secure,
     sameSite: 'strict',
     path: '/',
-    maxAge: Math.floor(hours * 3600),
+    ...(persistent ? { maxAge: Math.floor(hours * 3600) } : {}),
   });
 }
 export async function authRoutes({ app, db, config, io }: Context) {
@@ -93,7 +94,7 @@ export async function authRoutes({ app, db, config, io }: Context) {
       },
     },
     async (req, reply) => {
-      const input = credentials.parse(req.body);
+      const input = credentials.extend({ rememberMe: z.boolean().default(true) }).parse(req.body);
       const u = (
         await db.query('SELECT * FROM users WHERE email=$1 AND active=true', [input.email])
       ).rows[0];
@@ -102,7 +103,15 @@ export async function authRoutes({ app, db, config, io }: Context) {
         401,
         'Неверная почта или пароль',
       );
-      await createSession(db, reply, u.id, config.secure);
+      await createSession(
+        db,
+        reply,
+        u.id,
+        config.secure,
+        undefined,
+        input.rememberMe ? 24 * 14 : 24,
+        input.rememberMe,
+      );
       return { ok: true };
     },
   );

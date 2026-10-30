@@ -32,10 +32,15 @@ import {
   Sparkles,
   Search,
   ChevronRight,
+  ChevronLeft,
+  ChevronDown,
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import '@fontsource-variable/manrope';
 import './styles.css';
+import './surface.css';
+import Login from './auth/Login';
+import { TeacherHome } from './pages/TeacherHome';
 import './lesson/lesson.css';
 import { Brand, AccessExpired } from './lesson/shared';
 import { api, date } from './api';
@@ -89,134 +94,6 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
       this.props.children
     );
   }
-}
-function Login({ onLogin }: { onLogin: () => Promise<void> }) {
-  const [setup, setSetup] = useState<boolean | null>(null),
-    [needsKey, setNeedsKey] = useState(false),
-    [form, setForm] = useState({ name: '', email: '', password: '', setupToken: '' }),
-    [error, setError] = useState(''),
-    [busy, setBusy] = useState(false);
-  useEffect(() => {
-    api('/bootstrap')
-      .then((b) => {
-        setSetup(b.setupNeeded);
-        setNeedsKey(b.tokenRequired);
-      })
-      .catch((e) => setError(e.message));
-  }, []);
-  if (setup === null && !error) return <Busy />;
-  return (
-    <div className="auth-page">
-      <aside className="auth-art">
-        <Logo />
-        <div>
-          <span className="eyebrow">МЕНЬШЕ РУТИНЫ. БОЛЬШЕ ЗНАНИЙ.</span>
-          <h1>
-            Всё начинается
-            <br />с основы<span>.</span>
-          </h1>
-          <p>
-            Уроки, которые объединяют.
-            <br />
-            Пространство, в котором удобно учить.
-          </p>
-          <div className="art-board">
-            <span className="art-tag">Каждый урок — в одном месте</span>
-            <p>
-              Учиться — значит
-              <br />
-              <em>открывать новое.</em>
-            </p>
-            <div className="art-underline" />
-            <span className="art-cursor">↖ Вместе на одной доске</span>
-            <div className="art-dot" />
-          </div>
-        </div>
-        <small>Ваше пространство для обучения</small>
-      </aside>
-      <main className="auth-main">
-        <div className="auth-card">
-          <div className="mobile-logo">
-            <Logo />
-          </div>
-          <Badge>Добро пожаловать</Badge>
-          <h1>{setup ? 'Создадим ваше пространство' : 'С возвращением'}</h1>
-          <p className="muted">
-            {setup
-              ? 'Настройка выполняется один раз. Вы станете преподавателем и владельцем пространства.'
-              : 'Войдите, чтобы продолжить уроки и открыть материалы.'}
-          </p>
-          <form
-            onSubmit={async (e) => {
-              e.preventDefault();
-              setBusy(true);
-              setError('');
-              try {
-                await api(`/auth/${setup ? 'setup' : 'login'}`, form);
-                await onLogin();
-              } catch (e) {
-                setError((e as Error).message);
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            {setup && (
-              <Field label="Как к вам обращаться">
-                <input
-                  required
-                  autoComplete="name"
-                  maxLength={100}
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                />
-              </Field>
-            )}
-            <Field label="Электронная почта">
-              <input
-                type="email"
-                required
-                autoComplete="email"
-                value={form.email}
-                onChange={(e) => setForm({ ...form, email: e.target.value })}
-              />
-            </Field>
-            <Field
-              label="Пароль"
-              hint={setup ? 'Не меньше 10 символов. Сохраните пароль в надёжном месте.' : undefined}
-            >
-              <input
-                type="password"
-                required
-                minLength={10}
-                maxLength={128}
-                autoComplete={setup ? 'new-password' : 'current-password'}
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-              />
-            </Field>
-            {setup && needsKey && (
-              <Field label="Ключ первоначальной настройки">
-                <input
-                  type="password"
-                  required
-                  value={form.setupToken}
-                  onChange={(e) => setForm({ ...form, setupToken: e.target.value })}
-                />
-              </Field>
-            )}
-            <FormError error={error} />
-            <SaveButton busy={busy} label={setup ? 'Создать пространство' : 'Войти в EduSpace'} />
-          </form>
-          {!setup && (
-            <p className="auth-foot muted">
-              Нет доступа к кабинету? Попросите преподавателя прислать приглашение.
-            </p>
-          )}
-        </div>
-      </main>
-    </div>
-  );
 }
 function Join({ onLogin }: { onLogin: () => Promise<void> }) {
   const navigate = useNavigate();
@@ -346,6 +223,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     [query, setQuery] = useState('');
   const location = useLocation(),
     navigate = useNavigate();
+  const home = user.role === 'teacher' && location.pathname === '/';
   useEffect(() => {
     refresh()
       .then(() => {
@@ -409,7 +287,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
       </Routes>
     );
   return (
-    <div className="app-layout">
+    <div className={`app-layout ${home ? 'home-shell' : ''}`}>
       {mobile && <div className="sidebar-scrim" onClick={() => setMobile(false)} />}
       <aside className={`sidebar ${mobile ? 'open' : ''}`}>
         <Link to="/" className="brand-link">
@@ -494,7 +372,13 @@ function Shell({ onLogout }: { onLogout: () => void }) {
             <Menu size={21} />
           </button>
           <div className="breadcrumb">
-            Моё пространство <ChevronRight size={14} />
+            {home ? (
+              <ChevronLeft size={20} aria-hidden="true" />
+            ) : (
+              <>
+                Моё пространство <ChevronRight size={14} />
+              </>
+            )}
             <strong>{title}</strong>
           </div>
           <div className="topbar-actions">
@@ -537,14 +421,29 @@ function Shell({ onLogout }: { onLogout: () => void }) {
               <Bell size={21} />
               {unread > 0 && <i />}
             </Link>
-            <Avatar name={user.name} small />
+            {home ? (
+              <Link to="/settings" className="topbar-profile" aria-label="Открыть профиль">
+                <Avatar name={user.name} small />
+                <ChevronDown size={17} />
+              </Link>
+            ) : (
+              <Avatar name={user.name} small />
+            )}
           </div>
         </header>
         <main className="content" id="main-content">
           <Routes>
             <Route
               path="/"
-              element={user.role === 'guest' ? <Navigate to="/lessons" /> : <Dashboard />}
+              element={
+                user.role === 'guest' ? (
+                  <Navigate to="/lessons" />
+                ) : user.role === 'teacher' ? (
+                  <TeacherHome />
+                ) : (
+                  <Dashboard />
+                )
+              }
             />
             <Route path="/schedule" element={<SchedulePage />} />
             <Route path="/boards" element={<BoardsPage />} />

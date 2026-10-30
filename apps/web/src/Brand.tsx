@@ -1,8 +1,17 @@
 import wordmark from './assets/eduspace-logo.png';
 import symbol from './assets/eduspace-mark.png';
+import lightWordmark from './assets/eduspace-white.webp';
 import './brand.css';
 
-export function Brand({ mark = false, className = '' }: { mark?: boolean; className?: string }) {
+export function Brand({
+  mark = false,
+  light = false,
+  className = '',
+}: {
+  mark?: boolean;
+  light?: boolean;
+  className?: string;
+}) {
   // Frame the supplied artwork without its transparent outer margins.
   return (
     <svg
@@ -15,7 +24,7 @@ export function Brand({ mark = false, className = '' }: { mark?: boolean; classN
       focusable="false"
     >
       <image
-        href={mark ? symbol : wordmark}
+        href={mark ? symbol : light ? lightWordmark : wordmark}
         width={mark ? 1254 : 2048}
         height={mark ? 1254 : 682}
       />
