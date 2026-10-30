@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import type { Classroom, User } from '../../../../packages/contracts';
 import { api, date } from '../api';
-import { Avatar, Busy, Button, Field, FormError } from '../ui';
+import { Avatar, Badge, Busy, Button, Field, FormError } from '../ui';
 import { useApp } from '../store';
 import { AccessExpired, BackToCabinet, Brand, NoVideo, VideoNotice, useClassroom } from './shared';
 
@@ -77,13 +77,8 @@ function EntryLayout({
             <BookOpen size={26} />
             {lesson?.data.subject || room.students[0]?.subject || 'Учебное занятие'}
           </span>
-          <h1>
-            {waiting
-              ? 'Ожидаем преподавателя'
-              : room.activeSession
-                ? 'Урок уже начался'
-                : 'Готовы начать?'}
-          </h1>
+          {!waiting && room.activeSession && <Badge tone="mint">Урок уже начался</Badge>}
+          <h1>{waiting ? 'Ожидаем преподавателя' : lesson?.data.title || 'Готовы начать?'}</h1>
           <div className="lesson-ready-student">
             <Avatar name={room.students[0]?.name || room.title} />
             <div>
@@ -92,7 +87,7 @@ function EntryLayout({
                   ? `${room.students.length} ученика · мини-группа`
                   : `${room.students[0]?.name} · ${room.students[0]?.grade || 'индивидуально'}`}
               </span>
-              <h2>{lesson?.data.title || 'Индивидуальное занятие'}</h2>
+              {room.kind === 'group' && <h2>{room.title}</h2>}
             </div>
           </div>
           <div className="lesson-ready-time">

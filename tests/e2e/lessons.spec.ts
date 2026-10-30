@@ -143,7 +143,7 @@ test('one student link covers preparation, waiting, a shared lesson, comments, s
   const pupil = await studentContext.newPage();
   pupil.on('pageerror', (e) => errors.push(e.message));
   await pupil.goto(room.link);
-  await expect(pupil.getByRole('heading', { name: 'Готовы начать?' })).toBeVisible();
+  await expect(pupil.getByRole('heading', { name: 'Квадратные уравнения' })).toBeVisible();
   await expect(pupil.getByText('Место для видеосвязи', { exact: true })).toBeVisible();
   await pupil.screenshot({ path: testInfo.outputPath('lesson-entry-desktop.png'), fullPage: true });
   await pupil.setViewportSize({ width: 390, height: 844 });

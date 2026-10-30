@@ -42,6 +42,8 @@ import './surface.css';
 import Login from './auth/Login';
 import { TeacherHome } from './pages/TeacherHome';
 import './lesson/lesson.css';
+import './cabinet/cabinet.css';
+import { HomeworkComposer } from './cabinet/Homework';
 import { Brand, AccessExpired } from './lesson/shared';
 import { api, date } from './api';
 import { AppStore, useApp } from './store';
@@ -215,7 +217,7 @@ const studentPaths = [
   '/notifications',
 ];
 function Shell({ onLogout }: { onLogout: () => void }) {
-  const { user, records, refresh, toast } = useApp(),
+  const { user, records, students, refresh, toast } = useApp(),
     [ready, setReady] = useState(false),
     [error, setError] = useState(''),
     [mobile, setMobile] = useState(false),
@@ -223,7 +225,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     [query, setQuery] = useState('');
   const location = useLocation(),
     navigate = useNavigate();
-  const home = user.role === 'teacher' && location.pathname === '/';
+  const teacher = user.role === 'teacher';
   useEffect(() => {
     refresh()
       .then(() => {
@@ -256,11 +258,18 @@ function Shell({ onLogout }: { onLogout: () => void }) {
       (user.role === 'student' && studentPaths.includes(p)) ||
       (user.role === 'guest' && p === '/lessons'),
   );
-  const title = location.pathname.includes('/summary/')
-    ? 'Итоги урока'
-    : navigation.find(([p]) =>
-        p === '/' ? location.pathname === '/' : location.pathname.startsWith(p),
-      )?.[1] || 'Моё пространство';
+  const title =
+    location.pathname === '/settings'
+      ? 'Настройки'
+      : location.pathname === '/help'
+        ? 'Помощь'
+        : location.pathname.startsWith('/students/')
+          ? `Ученики / ${students.find((s) => s.id === location.pathname.split('/')[2])?.name || 'Карточка'}`
+          : location.pathname.includes('/summary/')
+            ? 'Итоги урока'
+            : navigation.find(([p]) =>
+                p === '/' ? location.pathname === '/' : location.pathname.startsWith(p),
+              )?.[1] || 'Моё пространство';
   const matches = query.trim()
     ? nav.filter(([, name]) => name.toLowerCase().includes(query.toLowerCase()))
     : [];
@@ -287,7 +296,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
       </Routes>
     );
   return (
-    <div className={`app-layout ${home ? 'home-shell' : ''}`}>
+    <div className={`app-layout ${teacher ? 'home-shell teacher-shell' : ''}`}>
       {mobile && <div className="sidebar-scrim" onClick={() => setMobile(false)} />}
       <aside className={`sidebar ${mobile ? 'open' : ''}`}>
         <Link to="/" className="brand-link">
@@ -303,7 +312,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
         <nav>
           {nav.map(([p, name, Icon], i) => (
             <React.Fragment key={p}>
-              {i === 8 && <div className="nav-divider" />}
+              {i === 9 && <div className="nav-divider" />}
               <NavLink
                 to={p}
                 end={p === '/'}
@@ -372,8 +381,19 @@ function Shell({ onLogout }: { onLogout: () => void }) {
             <Menu size={21} />
           </button>
           <div className="breadcrumb">
-            {home ? (
-              <ChevronLeft size={20} aria-hidden="true" />
+            {teacher ? (
+              <Link
+                to={
+                  location.pathname.startsWith('/students/')
+                    ? '/students'
+                    : location.pathname.startsWith('/homework/')
+                      ? '/homework'
+                      : '/'
+                }
+                aria-label="Назад"
+              >
+                <ChevronLeft size={20} aria-hidden="true" />
+              </Link>
             ) : (
               <>
                 Моё пространство <ChevronRight size={14} />
@@ -421,7 +441,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
               <Bell size={21} />
               {unread > 0 && <i />}
             </Link>
-            {home ? (
+            {teacher ? (
               <Link to="/settings" className="topbar-profile" aria-label="Открыть профиль">
                 <Avatar name={user.name} small />
                 <ChevronDown size={17} />
@@ -472,6 +492,8 @@ function Shell({ onLogout }: { onLogout: () => void }) {
             <Route path="/help" element={<HelpPage onTour={() => setTour(true)} />} />
             {user.role === 'teacher' && (
               <>
+                <Route path="/homework/new" element={<HomeworkComposer />} />
+                <Route path="/homework/:id/edit" element={<HomeworkComposer />} />
                 <Route path="/students" element={<StudentsPage />} />
                 <Route path="/students/:id" element={<StudentDetail />} />
                 <Route path="/reports" element={<ReportsPage />} />

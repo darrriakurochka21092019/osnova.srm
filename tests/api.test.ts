@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { PDFDocument } from 'pdf-lib';
 import { createApp } from '../apps/api/src/app';
 import { openDatabase } from '../apps/api/src/db';
-import { tickNotifications } from '../apps/api/src/modules/records';
+import { tickNotifications, notify } from '../apps/api/src/modules/records';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -368,6 +368,14 @@ test('private uploads validate signatures and PDF page count, with no cross-stud
   assert.equal((await multipart(png, 'bad.pdf', 'application/pdf', teacherCookie)).status, 415);
   const file = await multipart(png, 'пример.png', 'image/png', teacherCookie);
   assert.equal(file.status, 200);
+  const metadata = await request('GET', `/files/${file.body.id}/meta`);
+  assert.equal(metadata.status, 200);
+  assert.deepEqual(Object.keys(metadata.body).sort(), ['id', 'mime', 'name', 'size']);
+  assert.equal(metadata.body.name, 'пример.png');
+  assert.equal(
+    (await request('GET', `/files/${file.body.id}/meta`, undefined, otherStudentCookie)).status,
+    404,
+  );
   assert.equal(
     (
       await ctx.app.inject({
@@ -386,6 +394,14 @@ test('private uploads validate signatures and PDF page count, with no cross-stud
     },
   });
   assert.equal(record.status, 200);
+  assert.equal(
+    (await request('GET', `/files/${file.body.id}/meta`, undefined, studentCookie)).status,
+    200,
+  );
+  assert.equal(
+    (await request('GET', `/files/${file.body.id}/meta`, undefined, otherStudentCookie)).status,
+    404,
+  );
   assert.equal(
     (
       await ctx.app.inject({
@@ -739,4 +755,56 @@ test('formatted text uses private board files, validates metadata and persists f
     ).statusCode,
     404,
   );
+});
+
+test('notification categories persist and suppress only disabled events; report additions preserve legacy records', async () => {
+  const teacher = (await request('GET', '/me')).body;
+  const preferences = { enabled: true, lessons: true, homework: false, organization: true };
+  assert.equal(
+    (await request('PATCH', '/me', { settings: { notifications: preferences } })).status,
+    200,
+  );
+  assert.deepEqual((await request('GET', '/me')).body.settings.notifications, preferences);
+  const key = randomUUID();
+  await notify(ctx, teacher.id, teacher.id, 'Muted homework', '', '/homework', `muted:${key}`);
+  await notify(ctx, teacher.id, teacher.id, 'Allowed lesson', '', '/schedule', `allowed:${key}`);
+  let notifications = (await request('GET', '/records/notification')).body;
+  assert.equal(
+    notifications.some((n: any) => n.data.dedupeKey === `muted:${key}`),
+    false,
+  );
+  assert.equal(
+    notifications.some((n: any) => n.data.dedupeKey === `allowed:${key}`),
+    true,
+  );
+  await request('PATCH', '/me', {
+    settings: { notifications: { ...preferences, enabled: false } },
+  });
+  await notify(ctx, teacher.id, teacher.id, 'Muted all', '', '/schedule', `all:${key}`);
+  notifications = (await request('GET', '/records/notification')).body;
+  assert.equal(
+    notifications.some((n: any) => n.data.dedupeKey === `all:${key}`),
+    false,
+  );
+  await request('PATCH', '/me', {
+    settings: {
+      notifications: { enabled: true, lessons: true, homework: true, organization: true },
+    },
+  });
+  const legacy = await request('POST', '/records/report', {
+    studentId: student.id,
+    data: { title: 'Legacy report', month: '2026-10', summary: 'Summary', plan: 'Plan' },
+  });
+  assert.equal(legacy.status, 200);
+  assert.equal(legacy.body.data.strengths, '');
+  assert.equal(legacy.body.data.focus, '');
+  const edited = await request('PATCH', `/records/report/${legacy.body.id}`, {
+    data: { strengths: 'Освоенные навыки', focus: 'Работаем над темой', shared: true },
+  });
+  assert.equal(edited.status, 200);
+  const visible = (await request('GET', '/records/report', undefined, studentCookie)).body.find(
+    (r: any) => r.id === legacy.body.id,
+  );
+  assert.equal(visible.data.strengths, 'Освоенные навыки');
+  assert.equal(visible.data.focus, 'Работаем над темой');
 });
