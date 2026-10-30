@@ -1,6 +1,7 @@
-import { expect, test, type Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+import { type Page } from '@playwright/test';
 import { PDFDocument } from 'pdf-lib';
-import { loginTeacher, selectPresentation } from './helpers';
+import { loginTeacher, selectPresentation, selectCanvasObject, editCanvasText } from './helpers';
 
 async function draw(page: Page, x: number, y: number, dx = 150, dy = 0) {
   await page.mouse.move(x, y);
@@ -89,7 +90,7 @@ test('figures, subject lines, notes and formulas retain native editing, locking 
     .toBe(9);
   const cube = (await scene()).filter((e) => e.customData?.boardFigure && !e.isDeleted),
     front = cube.find((e) => e.type === 'rectangle')!;
-  await page.getByRole('menuitem', { name: 'Закрепить', exact: true }).click();
+  await page.getByRole('button', { name: 'Закрепить выделенное', exact: true }).click();
   await expect
     .poll(
       async () =>
@@ -99,13 +100,15 @@ test('figures, subject lines, notes and formulas retain native editing, locking 
   await page.mouse.click(area.x + 200, area.y + 650);
   const hit = await scenePoint(page, front.x, front.y + front.height / 2);
   await page.mouse.click(hit.x, hit.y);
-  await expect(page.getByRole('menuitem', { name: 'Открепить', exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Открепить выделенное', exact: true }),
+  ).toBeVisible();
   await draw(page, hit.x, hit.y, 60, 30);
   expect((await scene()).find((e) => e.id === front.id)?.x).toBe(front.x);
-  await page.getByRole('menuitem', { name: 'Открепить', exact: true }).click();
+  await page.getByRole('button', { name: 'Открепить выделенное', exact: true }).click();
   await expect.poll(async () => (await scene()).find((e) => e.id === front.id)?.locked).toBe(false);
-  await page.getByRole('button', { name: 'Действия с объектом', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'Дублировать', exact: true }).click();
+  await selectCanvasObject(page, front);
+  await page.getByRole('button', { name: 'Дублировать', exact: true }).click();
   await expect
     .poll(
       async () => (await scene()).filter((e) => e.customData?.boardFigure && !e.isDeleted).length,
@@ -147,6 +150,7 @@ test('figures, subject lines, notes and formulas retain native editing, locking 
     .toBe(1);
   const note = (await scene()).find((e) => e.customData?.sticker && !e.isDeleted)!;
   expect(note.backgroundColor).toBe('#cdf3e6');
+  await selectCanvasObject(page, note);
   for (const font of ['onest', 'unbounded', 'literata', 'caveat', 'pt-mono']) {
     await page.getByLabel('Шрифт текста', { exact: true }).selectOption(font);
     await expect
@@ -173,7 +177,10 @@ test('figures, subject lines, notes and formulas retain native editing, locking 
   await expect
     .poll(async () => (await scene()).filter((e) => e.customData?.formula && !e.isDeleted).length)
     .toBe(1);
-  await page.getByRole('button', { name: 'Изменить текст', exact: true }).click();
+  await editCanvasText(
+    page,
+    (await scene()).find((e) => e.customData?.formula && !e.isDeleted),
+  );
   await input.fill('I = U / R\nU = 12 В');
   await input.press('Control+Enter');
   await expect
@@ -183,14 +190,12 @@ test('figures, subject lines, notes and formulas retain native editing, locking 
           .text,
     )
     .toBe('I = U / R\nU = 12 В');
-  await page.getByRole('button', { name: 'Действия с объектом', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'Закрепить', exact: true }).click();
+  await page.getByRole('button', { name: 'Закрепить выделенное', exact: true }).click();
   const formula = (await scene()).find((e) => e.customData?.formula && !e.isDeleted)!;
   await expect
     .poll(async () => (await scene()).find((e) => e.id === formula.id)?.locked)
     .toBe(true);
-  await page.getByRole('button', { name: 'Действия с объектом', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'Открепить', exact: true }).click();
+  await page.getByRole('button', { name: 'Открепить выделенное', exact: true }).click();
   await expect
     .poll(async () => (await scene()).find((e) => e.id === formula.id)?.locked)
     .toBe(false);
@@ -246,15 +251,17 @@ test('PDF controls belong to the selected object, also in saved lessons and mobi
     .poll(async () => (await scene()).some((e) => e.customData?.presentation && !e.isDeleted))
     .toBe(true);
   const image = (await scene()).find((e) => e.customData?.presentation && !e.isDeleted)!;
-  await page.getByRole('menuitem', { name: 'Закрепить', exact: true }).click();
+  await page.getByRole('button', { name: 'Закрепить выделенное', exact: true }).click();
   await expect.poll(async () => (await scene()).find((e) => e.id === image.id)?.locked).toBe(true);
   const area = (await page.locator('.lesson-board-area').boundingBox())!;
   await page.mouse.click(area.x + 180, area.y + area.height - 120);
   await expect(page.getByRole('menu', { name: 'Действия с объектом' })).toHaveCount(0);
   const hit = await scenePoint(page, image.x + image.width / 2, image.y + image.height / 2);
   await page.mouse.click(hit.x, hit.y);
-  await expect(page.getByRole('menuitem', { name: 'Открепить', exact: true })).toBeVisible();
-  await page.getByRole('menuitem', { name: 'Открепить', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Открепить выделенное', exact: true }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Открепить выделенное', exact: true }).click();
   await expect.poll(async () => (await scene()).find((e) => e.id === image.id)?.locked).toBe(false);
   await page.getByRole('button', { name: 'Следующий слайд: Оптика', exact: true }).click();
   await expect(page.getByLabel('Слайд презентации Оптика')).toHaveValue('1');

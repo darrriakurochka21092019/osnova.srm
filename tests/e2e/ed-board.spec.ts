@@ -1,5 +1,5 @@
-import { expect, test } from '@playwright/test';
-import { loginTeacher } from './helpers';
+import { test, expect } from './fixtures';
+import { loginTeacher, selectCanvasObject, editCanvasText } from './helpers';
 
 test('tool popovers, formatted inline text and the supplied sticker pack save and reopen', async ({
   browser,
@@ -76,12 +76,19 @@ test('tool popovers, formatted inline text and the supplied sticker pack save an
   const input = page.getByRole('textbox', { name: 'Текст на доске', exact: true });
   await expect(input).toBeVisible();
   await input.fill('Листья, опавшие с деревьев,\nпокрыли дорожку.');
+  await input.press('Control+Enter');
+  await expect
+    .poll(async () => (await scene()).some((e) => e.customData?.richText && !e.isDeleted))
+    .toBe(true);
+  await selectCanvasObject(
+    page,
+    (await scene()).find((e) => e.customData?.richText && !e.isDeleted),
+  );
   await page.getByLabel('Шрифт текста', { exact: true }).selectOption('literata');
   await page.getByRole('button', { name: 'Жирный', exact: true }).click();
   await page.getByRole('button', { name: 'Курсив', exact: true }).click();
   await page.getByRole('button', { name: 'Подчёркнутый', exact: true }).click();
   await page.getByRole('button', { name: 'По центру', exact: true }).click();
-  await input.press('Control+Enter');
   await expect
     .poll(
       async () =>
@@ -90,12 +97,14 @@ test('tool popovers, formatted inline text and the supplied sticker pack save an
     )
     .toBe('literata');
   const text = (await scene()).find((e) => e.customData?.richText && !e.isDeleted)!;
-  expect(text.customData.richText).toMatchObject({
-    bold: true,
-    italic: true,
-    underline: true,
-    align: 'center',
-  });
+  await expect
+    .poll(async () => (await scene()).find((e) => e.id === text.id)?.customData.richText)
+    .toMatchObject({
+      bold: true,
+      italic: true,
+      underline: true,
+      align: 'center',
+    });
   await page.screenshot({ path: info.outputPath('formatted-text.png') });
   await page.getByRole('button', { name: 'Стикеры', exact: true }).click();
   await page.getByRole('button', { name: 'Мятный стикер', exact: true }).click();
@@ -119,24 +128,23 @@ test('tool popovers, formatted inline text and the supplied sticker pack save an
     )
     .toBe(1);
   const picture = (await scene()).find((e) => e.customData?.pictureSticker && !e.isDeleted)!;
-  await page.getByRole('menuitem', { name: 'На задний план', exact: true }).click();
+  await selectCanvasObject(page, picture);
+  await page.getByRole('button', { name: 'На задний план', exact: true }).click();
   await expect
     .poll(async () => (await scene()).filter((e) => !e.isDeleted)[0]?.id)
     .toBe(picture.id);
-  await page.getByRole('button', { name: 'Действия с объектом', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'На передний план', exact: true }).click();
+  await page.getByRole('button', { name: 'На передний план', exact: true }).click();
   await expect
     .poll(async () => (await scene()).filter((e) => !e.isDeleted).at(-1)?.id)
     .toBe(picture.id);
-  await page.getByRole('button', { name: 'Действия с объектом', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'Дублировать', exact: true }).click();
+  await page.getByRole('button', { name: 'Дублировать', exact: true }).click();
   await expect
     .poll(
       async () =>
         (await scene()).filter((e) => e.customData?.pictureSticker && !e.isDeleted).length,
     )
     .toBe(2);
-  await page.getByRole('menuitem', { name: 'Удалить', exact: true }).click();
+  await page.getByRole('button', { name: 'Удалить', exact: true }).click();
   await expect
     .poll(
       async () =>
@@ -266,7 +274,6 @@ test('unfinished formatted text recovers from the offline draft and clearing it 
   await page.mouse.click(area.x + 420, area.y + 260);
   const input = page.getByRole('textbox', { name: 'Текст на доске', exact: true });
   await input.fill('Сохранить незавершённую мысль');
-  await page.getByRole('button', { name: 'Жирный', exact: true }).click();
   await expect(page.locator('.lesson-save')).toContainText('Нет связи');
   await page.reload();
   await expect(input).toHaveValue('Сохранить незавершённую мысль');
@@ -278,8 +285,8 @@ test('unfinished formatted text recovers from the offline draft and clearing it 
     (await (await request.get(`/api/v1/pages/${board.canvas_page_id}/snapshot`)).json())
       .scene as any[];
   const text = (await scene()).find((e) => e.customData?.richText && !e.isDeleted)!;
-  expect(text.customData.richText.bold).toBe(true);
-  await page.getByRole('button', { name: 'Изменить текст', exact: true }).click();
+  expect(text.customData.richText.bold).toBe(false);
+  await editCanvasText(page, text);
   await input.fill('');
   await input.press('Control+Enter');
   await expect

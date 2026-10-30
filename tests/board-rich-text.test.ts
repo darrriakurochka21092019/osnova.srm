@@ -1,9 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { hexRgb, rgbHex, rgbHsv, hsvHex } from '../apps/web/src/board/color';
-import { defaultText, textModel, wrapText } from '../apps/web/src/board/richText';
+import {
+  defaultText,
+  textModel,
+  wrapText,
+  editingProjection,
+  unmaskText,
+  textLayout,
+} from '../apps/web/src/board/richText';
 import { pdfLayout } from '../apps/web/src/board/exportLayout';
-import { duplicateObjects, objectSelection } from '../apps/web/src/board/interaction';
+import {
+  duplicateObjects,
+  objectSelection,
+  movingObjectIds,
+  translateObjects,
+  movableHit,
+} from '../apps/web/src/board/interaction';
 import { orderCanvas, projectCanvas } from '../packages/contracts/canvas';
 import { dataUrlBlob } from '../apps/web/src/api';
 
@@ -129,4 +142,98 @@ test('layer order is derived from native fractional indices while older scenes r
   assert.deepEqual(projectCanvas([second, first]), [first, second]);
   const legacy = { id: 'old' };
   assert.deepEqual(orderCanvas([second, legacy, first]), [second, legacy, first]);
+});
+
+test('editing projection hides only local text and never changes stored opacity or source', () => {
+  const source: any[] = [
+    {
+      id: 'text',
+      opacity: 75,
+      type: 'image',
+      customData: { richText: { ...defaultText, text: 'Пример' } },
+    },
+    { id: 'figure', opacity: 100, type: 'rectangle' },
+  ];
+  const projected = editingProjection(source, 'text');
+  assert.equal(projected[0].opacity, 0);
+  assert.equal(projected[1], source[1]);
+  assert.equal(source[0].opacity, 75);
+  assert.deepEqual(unmaskText(projected), source);
+  assert.equal(unmaskText(projected)[0].customData.osnovaEditingOpacity, undefined);
+});
+test('inline layout follows content and hard line breaks, without a fixed 440px editor box', () => {
+  const small = textLayout({ ...defaultText, text: 'Привет' }, (s) => s.length * 12),
+    long = textLayout(
+      { ...defaultText, text: 'Привет, мир!\nВторая строка' },
+      (s) => s.length * 12,
+    );
+  assert.ok(small.width < 100);
+  assert.ok(long.width > small.width);
+  assert.ok(long.height > small.height);
+  assert.equal(small.height, 24 * 1.35 + 2 * 3.84);
+});
+test('moving objects translates a full ownership chain without changing geometry, appearance or points', () => {
+  const elements: any[] = [
+    { id: 'pdf', type: 'image', x: 0, y: 0, width: 800, height: 600, angle: 0.2 },
+    {
+      id: 'note',
+      type: 'rectangle',
+      x: 10,
+      y: 20,
+      width: 200,
+      height: 150,
+      customData: { slideAnnotation: { presentationId: 'pdf', slideIndex: 0 } },
+    },
+    {
+      id: 'text',
+      type: 'image',
+      x: 22,
+      y: 32,
+      customData: { richText: { ...defaultText, containerId: 'note' } },
+    },
+    {
+      id: 'ink',
+      type: 'freedraw',
+      x: 30,
+      y: 60,
+      width: 50,
+      height: 20,
+      points: [
+        [0, 0],
+        [50, 20],
+      ],
+      pressures: [0.2, 0.7],
+      strokeColor: '#f00',
+      strokeWidth: 2,
+      customData: { stickerAnnotation: { stickerId: 'note' } },
+    },
+  ];
+  const ids = movingObjectIds(elements, ['pdf']),
+    moved = translateObjects(elements, ids, 75, -30);
+  assert.equal(ids.size, 4);
+  for (let i = 0; i < elements.length; i++) {
+    assert.equal(moved[i].x, elements[i].x + 75);
+    assert.equal(moved[i].y, elements[i].y - 30);
+    assert.deepEqual({ ...moved[i], x: elements[i].x, y: elements[i].y }, elements[i]);
+  }
+  assert.equal(moved[3].points, elements[3].points);
+  assert.equal(moved[3].customData, elements[3].customData);
+  assert.equal(
+    movableHit(
+      [
+        {
+          id: 'circle',
+          type: 'ellipse',
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 100,
+          backgroundColor: 'transparent',
+        },
+      ],
+      { x: 50, y: 50 },
+      4,
+    )?.id,
+    'circle',
+  );
 });

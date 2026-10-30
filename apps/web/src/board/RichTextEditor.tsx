@@ -1,5 +1,5 @@
-import { useLayoutEffect, useRef } from 'react';
-import { textFamily, type TextModel } from './richText';
+import { useLayoutEffect, useRef, useState } from 'react';
+import { textFamily, textFont, textLayout, type TextModel } from './richText';
 export type TextEditing = {
   id: string;
   x: number;
@@ -22,18 +22,23 @@ export default function RichTextEditor({
   onCommit: () => void;
   onCancel: () => void;
 }) {
-  const input = useRef<HTMLTextAreaElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null),
+    [size, setSize] = useState({ width: 40, height: 40, padding: 3 });
+  const m = value.model;
   useLayoutEffect(() => {
     input.current?.focus({ preventScroll: true });
   }, [value.id]);
   useLayoutEffect(() => {
-    const el = input.current;
-    if (el) {
-      el.style.height = 'auto';
-      el.style.height = `${Math.max(value.model.fontSize * view.zoom * 1.6, el.scrollHeight)}px`;
-    }
-  }, [value.model, view.zoom]);
-  const m = value.model;
+    const measure = () => {
+      const ctx = document.createElement('canvas').getContext('2d')!;
+      ctx.font = textFont(m);
+      const layout = textLayout(m, (s) => ctx.measureText(s).width);
+      setSize({ width: layout.width + 4, height: layout.height, padding: layout.padding });
+    };
+    measure();
+    document.fonts.addEventListener('loadingdone', measure);
+    return () => document.fonts.removeEventListener('loadingdone', measure);
+  }, [m]);
   return (
     <textarea
       ref={input}
@@ -41,26 +46,26 @@ export default function RichTextEditor({
       aria-label="Текст на доске"
       value={m.text}
       maxLength={20000}
-      placeholder="Введите текст…"
       spellCheck={false}
-      style={{
-        left: Math.max(8, Math.min((value.x + view.scrollX) * view.zoom, view.width - 100)),
-        top: Math.max(8, Math.min((value.y + view.scrollY) * view.zoom, view.height - 60)),
-        width: Math.min((m.maxWidth || 440) * view.zoom, view.width - 24),
-        fontFamily: `"${textFamily(m.family)}", Arial, sans-serif`,
-        fontSize: m.fontSize * view.zoom,
-        fontWeight: m.bold ? 700 : 400,
-        fontStyle: m.italic ? 'italic' : 'normal',
-        textDecoration: m.underline ? 'underline' : 'none',
-        textAlign: m.align,
-        color: m.color,
-        transform: `rotate(${value.angle || 0}rad)`,
-      }}
+      style={
+        {
+          left: (value.x + view.scrollX) * view.zoom,
+          top: (value.y + view.scrollY) * view.zoom,
+          width: size.width * view.zoom,
+          height: size.height * view.zoom,
+          '--inline-padding': `${size.padding * view.zoom}px`,
+          fontFamily: `"${textFamily(m.family)}",Arial,sans-serif`,
+          fontSize: m.fontSize * view.zoom,
+          fontWeight: m.bold ? 700 : 400,
+          fontStyle: m.italic ? 'italic' : 'normal',
+          textDecoration: m.underline ? 'underline' : 'none',
+          textAlign: m.align,
+          color: m.color,
+          transform: `rotate(${value.angle || 0}rad)`,
+        } as React.CSSProperties
+      }
       onChange={(e) => onChange({ ...m, text: e.target.value })}
-      onBlur={(e) => {
-        if (!(e.relatedTarget as HTMLElement)?.closest('.board-text-toolbar,.board-tool-panel'))
-          onCommit();
-      }}
+      onBlur={onCommit}
       onKeyDown={(e) => {
         e.stopPropagation();
         if (e.key === 'Escape') {

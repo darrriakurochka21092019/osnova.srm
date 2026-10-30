@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { loginTeacher } from './helpers';
 
 test('cancelled lines, dots and interrupted pen input do not block saving later strokes', async ({

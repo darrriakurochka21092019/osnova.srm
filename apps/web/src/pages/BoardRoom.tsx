@@ -75,12 +75,27 @@ import type {
 import { backgrounds, backgroundStyle, paintBackground } from '../board/background';
 import { captureCanvas, snapshotCanvas, repairCanvasGeometry } from '../board/canvas';
 import { decorateLine, figureFromDrag, badgeParts } from '../board/geometry';
-import { canvasHit, objectSelection, duplicateObjects } from '../board/interaction';
+import {
+  canvasHit,
+  objectSelection,
+  duplicateObjects,
+  movableHit,
+  movingObjectIds,
+  translateObjects,
+} from '../board/interaction';
 import { figures, type FigureKind, type FigureSpec, type LineKind } from '../board/catalog';
 import BoardTools, { VectorPreview } from '../board/BoardTools';
 import '../board/tools.css';
 import '../board/fonts.css';
-import { defaultText, textModel, renderText, wrapText, type TextModel } from '../board/richText';
+import {
+  defaultText,
+  textModel,
+  renderText,
+  wrapText,
+  editingProjection,
+  unmaskText,
+  type TextModel,
+} from '../board/richText';
 import BoardExportDialog from '../board/BoardExportDialog';
 import {
   defaultExport,
@@ -116,7 +131,12 @@ export type BoardSelection = {
   figure?: FigureSpec;
   type?: string;
   isNote?: boolean;
-  bounds?: { toolbarX: number; toolbarY: number; menuX: number; menuY: number };
+  inkTool?: 'pen' | 'marker';
+  bounds?: {
+    inspectorX: number;
+    lockX: number;
+    lockY: number;
+  };
 };
 export type BoardToolState = {
   type: string;
@@ -132,6 +152,9 @@ export type BoardToolState = {
   opacity?: number;
   fill?: string;
   textStyle?: TextModel;
+  inspectorOpen?: boolean;
+  interacting?: boolean;
+  editingText?: boolean;
 };
 export type BoardPresentation = {
   id: string;
@@ -179,6 +202,7 @@ export type EditorHandle = {
   addSticker: (kind: string, color: string, text?: string) => void;
   addPictureSticker: (id: string) => Promise<void>;
   addFormula: (text: string, title?: string) => void;
+  showInspector: (show: boolean) => void;
   lockSelection: () => void;
   selectObject: (id: string) => void;
   undo: (redo?: boolean) => void;
@@ -573,8 +597,8 @@ export default function BoardRoom(props: BoardRoomProps = {}) {
           <span className="board-participant-count">{peers.length + 1} на доске</span>
         </div>
       </div>
-      {!props.embedded && toolsOpen && (
-        <div className="legacy-board-tools">
+      {!props.embedded && (
+        <div className={`legacy-board-tools ${toolsOpen ? '' : 'tools-collapsed'}`}>
           <BoardTools
             editor={handle}
             tool={toolState}
@@ -840,6 +864,17 @@ type SurfaceGesture =
       width: number;
       fill: string;
     }
+  | {
+      kind: 'object';
+      id: number;
+      start: [number, number];
+      ids: Set<string>;
+      elements: readonly any[];
+      moved: boolean;
+      dx: number;
+      dy: number;
+      locked: boolean;
+    }
   | { kind: 'locked' | 'text'; id: number };
 
 function PageEditor({
@@ -889,12 +924,15 @@ function PageEditor({
     textTool = useRef(false),
     editingRef = useRef<TextEditing | null>(null),
     recoveredText = useRef<TextEditing | undefined>(undefined),
-    textDefaults = useRef<TextModel>({ ...defaultText }),
     textTasks = useRef(new Set<Promise<void>>()),
     textEpoch = useRef(new Map<string, number>()),
     textDrafts = useRef(new Map<string, TextModel>()),
     textAutosave = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
-    inkTool = useRef<'pen' | 'marker'>('pen');
+    inkTool = useRef<'pen' | 'marker'>('pen'),
+    inspectorOpen = useRef(false),
+    objectInteracting = useRef(false),
+    lastObjectClick = useRef<{ key: string; at: number; x: number; y: number } | null>(null),
+    nativeStart = useRef<{ x: number; y: number; clicked: boolean } | null>(null);
   const deckStamp = useRef('');
   const selectionRef = useRef<BoardSelection>({
       ids: [],
@@ -964,11 +1002,22 @@ function PageEditor({
       figure,
       type: first?.type,
       isNote: chosen.some((e) => e.customData?.sticker?.kind === 'note'),
+      inkTool: first?.customData?.inkTool,
       bounds: {
-        toolbarX: Math.max(70, Math.min(vx, state.width - 650)),
-        toolbarY: Math.max(10, vy - 58),
-        menuX: Math.max(74, Math.min(vr + 10, state.width - 248)),
-        menuY: Math.max(12, Math.min(vy, state.height - 320)),
+        inspectorX: state.width > 760 && (vx + vr) / 2 < 340 && vy < 380 ? state.width - 230 : 104,
+        lockX: Math.max(
+          72,
+          Math.min(presentationOf(first || {}) ? vr + 8 : (vx + vr) / 2 - 16, state.width - 40),
+        ),
+        lockY: Math.max(
+          8,
+          Math.min(
+            presentationOf(first || {})
+              ? vy - 38
+              : oy + (bottom + state.scrollY) * state.zoom.value + 14,
+            state.height - 42,
+          ),
+        ),
       },
     };
     const deck = chosen.length === 1 && presentationOf(chosen[0]) ? chosen[0].id : '';
@@ -1087,7 +1136,10 @@ function PageEditor({
     const native = new Map(editor?.getSceneElementsIncludingDeleted().map((e) => [e.id, e]));
     editor?.updateScene({
       // Keep native references for unchanged objects so autosave/remote edits cannot interrupt a stroke.
-      elements: restoreElements(projectCanvas(current.current), null).map((e) => {
+      elements: restoreElements(
+        editingProjection(projectCanvas(current.current), editingRef.current?.id),
+        null,
+      ).map((e) => {
         const existing = native.get(e.id);
         return existing &&
           fingerprint(existing) === fingerprint(e) &&
@@ -1126,7 +1178,11 @@ function PageEditor({
     }
     if (present?.locked) return Promise.resolve();
     if (present && JSON.stringify(textModel(present)) === JSON.stringify(value.model)) {
-      if (select && (!editingRef.current || editingRef.current.id === value.id)) {
+      if (
+        select &&
+        (!editingRef.current || editingRef.current.id === value.id) &&
+        (!selectionRef.current.ids.length || selectionRef.current.ids.includes(value.id))
+      ) {
         const ids = objectSelection(editor.getSceneElements(), value.id);
         editor.updateScene({
           appState: { selectedElementIds: Object.fromEntries(ids.map((id) => [id, true])) },
@@ -1141,7 +1197,9 @@ function PageEditor({
       const rendered = await renderText(value.model);
       await waitForGestureEnd();
       if (!mounted.current || !ready.current || textEpoch.current.get(value.id) !== epoch) return;
-      const old = editor.getSceneElementsIncludingDeleted().find((e) => e.id === value.id);
+      const old = unmaskText(editor.getSceneElementsIncludingDeleted()).find(
+        (e) => e.id === value.id,
+      );
       if (old?.isDeleted || old?.locked) return;
       const parent = value.model.containerId
         ? editor.getSceneElements().find((e) => e.id === value.model.containerId)
@@ -1199,22 +1257,26 @@ function PageEditor({
         'verticalAlign',
       ])
         delete (next as any)[key];
-      const all = editor.getSceneElementsIncludingDeleted().map((e) =>
+      const all = unmaskText(editor.getSceneElementsIncludingDeleted()).map((e) =>
         e.id === next.id
           ? next
           : parent && e.id === parent.id
             ? changedElement(e, {
                 groupIds,
-                boundElements: e.boundElements?.filter((b) => b.id !== next.id) || null,
+                boundElements: e.boundElements?.filter((b: any) => b.id !== next.id) || null,
               })
             : e,
       );
       if (!old) all.push(next);
       editor.updateScene({
-        elements: all,
+        elements: editingProjection(all, editingRef.current?.id),
         ...(select &&
         (!editingRef.current || editingRef.current.id === value.id) &&
-        editor.getAppState().activeTool.type !== 'freedraw'
+        editor.getAppState().activeTool.type !== 'freedraw' &&
+        (!selectionRef.current.ids.length ||
+          selectionRef.current.ids.includes(value.id) ||
+          selectionRef.current.ids.includes(value.model.containerId || '') ||
+          value.customData?.formula)
           ? {
               appState: {
                 selectedElementIds: { [next.id]: true, ...(parent ? { [parent.id]: true } : {}) },
@@ -1233,8 +1295,19 @@ function PageEditor({
     return task;
   };
   const editText = (value: TextEditing | null) => {
+    const previous = editingRef.current?.id;
     editingRef.current = value;
     setTextEditing(value);
+    inspectorOpen.current = false;
+    if (editor && previous !== value?.id)
+      editor.updateScene({
+        elements: editingProjection(
+          unmaskText(editor.getSceneElementsIncludingDeleted()),
+          value?.id,
+        ),
+        ...(value ? { appState: { selectedElementIds: {} } } : {}),
+        captureUpdate: CaptureUpdateAction.NEVER,
+      });
     if (value) {
       onSave('saving');
       clearTimeout(persistTimer.current);
@@ -1379,6 +1452,9 @@ function PageEditor({
         elements.find((e) => selectionRef.current.ids.includes(e.id))?.opacity ??
         state.currentItemOpacity,
       fill: state.currentItemBackgroundColor,
+      inspectorOpen: inspectorOpen.current,
+      interacting: objectInteracting.current,
+      editingText: !!editingRef.current,
       textStyle:
         editingRef.current?.model ||
         textModel(
@@ -1394,7 +1470,7 @@ function PageEditor({
   const captureRendered = (elements: readonly any[], before = current.current) => {
     nativeScene.current = { elements, version: elements.reduce((n, e) => n + e.version, 0) };
     const oldIds = new Set(before.map((e) => e.id));
-    const decorated = repairCanvasGeometry(elements, before).flatMap((e) =>
+    const decorated = repairCanvasGeometry(unmaskText(elements), before).flatMap((e) =>
       dragStart.current &&
       e.type === 'line' &&
       !e.isDeleted &&
@@ -1422,7 +1498,7 @@ function PageEditor({
         );
     current.current = snapshotCanvas([...next.values()], current.current);
     publishDecks();
-    const projected = projectCanvas(current.current);
+    const projected = editingProjection(projectCanvas(current.current), editingRef.current?.id);
     if (
       projected.length !== elements.length ||
       projected.some(
@@ -1699,6 +1775,7 @@ function PageEditor({
     initialFrame = requestAnimationFrame(initialize);
     const stopPointerDown = editor.onPointerDown((tool, pointer) => {
       retainedSelection.current = [];
+      inspectorOpen.current = false;
       if (readOnly || previewScene.current) {
         const scene = previewScene.current || current.current;
         const hit = [...scene]
@@ -1728,6 +1805,9 @@ function PageEditor({
       queueMicrotask(() => {
         if (epoch !== gestureEpoch.current || !mounted.current) return;
         pointerDown.current = false;
+        inspectorOpen.current =
+          !!nativeStart.current?.clicked && editor.getAppState().activeTool.type === 'selection';
+        nativeStart.current = null;
         if (!readOnly && ready.current && !previewScene.current)
           captureRendered(
             editor.getSceneElementsIncludingDeleted(),
@@ -2078,6 +2158,7 @@ function PageEditor({
         figureKind.current = null;
         setActiveFigure(null);
         retainedSelection.current = [];
+        inspectorOpen.current = false;
         const ink = type === 'pen' || type === 'marker';
         textTool.current = type === 'text';
         if (ink) inkTool.current = type;
@@ -2120,7 +2201,13 @@ function PageEditor({
         if (readOnly || previewScene.current) return;
         const state = editor.getAppState(),
           free = state.activeTool.type === 'freedraw',
-          range = free && inkTool.current === 'marker' ? markerSizes : penSizes;
+          range = (
+            free
+              ? inkTool.current === 'marker'
+              : selected().some((e) => e.customData?.inkTool === 'marker')
+          )
+            ? markerSizes
+            : penSizes;
         width = Math.max(range.min, Math.min(range.max, width));
         if (free) inkProfiles.current[inkTool.current].width = width;
         const ids = new Set(selectionRef.current.ids);
@@ -2185,7 +2272,6 @@ function PageEditor({
           ...(style.underline !== undefined ? { underline: style.underline } : {}),
           ...(style.textAlign ? { align: style.textAlign } : {}),
         };
-        textDefaults.current = { ...textDefaults.current, ...patch, text: '' };
         if (editingRef.current) {
           editText({ ...editingRef.current, model: { ...editingRef.current.model, ...patch } });
           return;
@@ -2317,7 +2403,7 @@ function PageEditor({
           x: x + 12,
           y: y + 12,
           angle: 0,
-          model: { ...textDefaults.current, text, containerId: id, maxWidth: 208 },
+          model: { ...defaultText, fontSize: 20, text, containerId: id, maxWidth: 208 },
           groupIds: [group],
         };
         await commitText(value);
@@ -2359,15 +2445,20 @@ function PageEditor({
         );
       },
       async addFormula(text, title = 'Формула') {
+        inspectorOpen.current = false;
         const { x, y } = center();
         await commitText({
           id: crypto.randomUUID(),
           x,
           y,
           angle: 0,
-          model: { ...textDefaults.current, text, fontSize: 28 },
+          model: { ...defaultText, text, fontSize: 28 },
           customData: { formula: { title } },
         });
+      },
+      showInspector(show) {
+        inspectorOpen.current = show;
+        reportTools(editor.getSceneElementsIncludingDeleted(), editor.getAppState());
       },
       lockSelection() {
         if (readOnly || previewScene.current) return;
@@ -2393,6 +2484,8 @@ function PageEditor({
       selectObject(id) {
         const e = editor.getSceneElements().find((e) => e.id === id);
         if (!e) return;
+        inspectorOpen.current = true;
+        textTool.current = false;
         retainedSelection.current = objectSelection(editor.getSceneElements(), id);
         figureKind.current = null;
         setActiveFigure(null);
@@ -2521,30 +2614,10 @@ function PageEditor({
       },
       addTemplate(kind) {
         if (kind === 'note') {
-          handleRef.current?.addSticker(
-            'note',
-            '#fff0a8',
-            'Заметка\n\nИдея, вопрос или важный вывод.',
-          );
+          void handleRef.current?.addSticker('note', '#fff0a8', '');
           return;
         }
-        const { x, y } = center();
-        const text =
-          kind === 'note'
-            ? 'Заметка\n\nИдея, вопрос или важный вывод.'
-            : 'Текстовый блок\n\nДважды нажмите, чтобы ввести текст.';
-        add([
-          {
-            type: 'text',
-            x,
-            y,
-            text,
-            fontFamily: 2,
-            fontSize: kind === 'note' ? 20 : 24,
-            strokeColor: kind === 'note' ? '#2a8b69' : '#252846',
-            roughness: 0,
-          },
-        ]);
+        handleRef.current?.setTool('text');
       },
       async previewExport(options) {
         if (textTasks.current.size) await Promise.all([...textTasks.current]);
@@ -2611,6 +2684,19 @@ function PageEditor({
   });
   const resetSurfaceGesture = () => {
     const gesture = surfaceGesture.current;
+    if (gesture?.kind === 'object' && pointerDown.current && editor) {
+      pointerDown.current = false;
+      objectInteracting.current = false;
+      inspectorOpen.current = false;
+      editor.updateScene({ elements: gesture.elements, captureUpdate: CaptureUpdateAction.NEVER });
+      dragStart.current = null;
+      releaseGestureWaiters();
+      reportTools(editor.getSceneElementsIncludingDeleted(), editor.getAppState());
+      const queued = remoteQueue.current.splice(0);
+      void (async () => {
+        for (const payload of queued) await applyRemote(payload);
+      })().catch((e) => onSave('error', e.message));
+    }
     surfaceGesture.current = null;
     if (gesture && surface.current?.hasPointerCapture(gesture.id))
       surface.current.releasePointerCapture(gesture.id);
@@ -2666,7 +2752,7 @@ function PageEditor({
             x: point.x,
             y: point.y,
             angle: 0,
-            model: { ...textDefaults.current, text: '' },
+            model: { ...defaultText },
           });
         gesture = { kind: 'text', id: event.pointerId };
       } else if (figureKind.current) {
@@ -2682,22 +2768,45 @@ function PageEditor({
           fill: state.currentItemBackgroundColor,
         };
       } else if (state.activeTool.type === 'selection') {
-        const elements = editor.getSceneElements();
-        const hit = canvasHit(elements, point, 6 / state.zoom.value);
-        if (hit?.locked) {
-          const ids = objectSelection(elements, hit.id);
-          const selected = new Set(event.shiftKey ? selectionRef.current.ids : []);
-          const remove = event.shiftKey && ids.every((id) => selected.has(id));
-          for (const id of ids) remove ? selected.delete(id) : selected.add(id);
+        const elements = unmaskText(editor.getSceneElementsIncludingDeleted());
+        const hit = movableHit(elements, point, 4 / state.zoom.value);
+        if (hit) {
+          const objectIds = objectSelection(elements, hit.id),
+            previous = selectionRef.current.ids;
+          const selected = new Set(
+            event.shiftKey || objectIds.some((id) => previous.includes(id)) ? previous : [],
+          );
+          const remove = event.shiftKey && objectIds.every((id) => selected.has(id));
+          for (const id of objectIds) remove ? selected.delete(id) : selected.add(id);
           retainedSelection.current = [...selected];
+          inspectorOpen.current = false;
+          objectInteracting.current = true;
           editor.updateScene({
             appState: {
               selectedElementIds: Object.fromEntries([...selected].map((id) => [id, true])),
               selectedLinearElement: null,
+              editingLinearElement: null,
             },
             captureUpdate: CaptureUpdateAction.NEVER,
           });
-          gesture = { kind: 'locked', id: event.pointerId };
+          reportTools(editor.getSceneElementsIncludingDeleted(), editor.getAppState());
+          pointerDown.current = true;
+          gestureEpoch.current++;
+          dragStart.current = current.current;
+          gesture = {
+            kind: 'object',
+            id: event.pointerId,
+            start: [point.x, point.y],
+            ids: movingObjectIds(elements, [...selected]),
+            elements,
+            moved: false,
+            dx: 0,
+            dy: 0,
+            locked: !!hit.locked || !selected.size,
+          };
+        } else {
+          nativeStart.current = { x: event.clientX, y: event.clientY, clicked: false };
+          inspectorOpen.current = false;
         }
       }
     }
@@ -2722,6 +2831,23 @@ function PageEditor({
         },
         captureUpdate: CaptureUpdateAction.NEVER,
       });
+    } else if (gesture.kind === 'object') {
+      const point = viewportCoordsToSceneCoords(event, editor.getAppState()),
+        dx = point.x - gesture.start[0],
+        dy = point.y - gesture.start[1];
+      if (
+        gesture.locked ||
+        (!gesture.moved && Math.hypot(dx, dy) * editor.getAppState().zoom.value < 5)
+      )
+        return;
+      gesture.moved = true;
+      gesture.dx = dx;
+      gesture.dy = dy;
+      editor.updateScene({
+        elements: translateObjects(gesture.elements, gesture.ids, dx, dy),
+        captureUpdate: CaptureUpdateAction.NEVER,
+      });
+      sendCursor(point);
     } else if (gesture.kind === 'figure') {
       const point = viewportCoordsToSceneCoords(event, editor.getAppState());
       gesture.end = [point.x, point.y];
@@ -2735,10 +2861,71 @@ function PageEditor({
   };
   const surfaceUp = (event: React.PointerEvent<HTMLDivElement>) => {
     const gesture = surfaceGesture.current;
-    if (!gesture || gesture.id !== event.pointerId || !editor) return;
+    if (!gesture) {
+      if (nativeStart.current)
+        nativeStart.current.clicked =
+          Math.hypot(event.clientX - nativeStart.current.x, event.clientY - nativeStart.current.y) <
+          5;
+      return;
+    }
+    if (gesture.id !== event.pointerId || !editor) return;
     event.preventDefault();
     event.stopPropagation();
+    let editAfterGesture: any;
+    if (gesture.kind === 'object') {
+      const key = [...gesture.ids].sort().join('|'),
+        last = lastObjectClick.current;
+      const twice =
+        !gesture.moved &&
+        !gesture.locked &&
+        last?.key === key &&
+        event.timeStamp - last.at < 450 &&
+        Math.hypot(gesture.start[0] - last.x, gesture.start[1] - last.y) *
+          editor.getAppState().zoom.value <
+          6;
+      lastObjectClick.current =
+        gesture.moved || twice
+          ? null
+          : { key, at: event.timeStamp, x: gesture.start[0], y: gesture.start[1] };
+      if (twice)
+        editAfterGesture = editor
+          .getSceneElements()
+          .find((e) => gesture.ids.has(e.id) && (textModel(e) || e.customData?.sticker));
+      pointerDown.current = false;
+      objectInteracting.current = false;
+      inspectorOpen.current = !gesture.moved;
+      const shifted = translateObjects(gesture.elements, gesture.ids, gesture.dx, gesture.dy);
+      const next = shifted.map((e, i) =>
+        gesture.moved && e !== gesture.elements[i]
+          ? changedElement(gesture.elements[i], { x: e.x, y: e.y })
+          : e,
+      );
+      editor.updateScene({
+        elements: next,
+        appState: {
+          selectedElementIds: Object.fromEntries(retainedSelection.current.map((id) => [id, true])),
+        },
+        captureUpdate: gesture.moved ? CaptureUpdateAction.IMMEDIATELY : CaptureUpdateAction.NEVER,
+      });
+      if (gesture.moved)
+        captureRendered(
+          editor.getSceneElementsIncludingDeleted(),
+          dragStart.current || current.current,
+        );
+      dragStart.current = null;
+      releaseGestureWaiters();
+      reportTools(editor.getSceneElementsIncludingDeleted(), editor.getAppState());
+      if (deferredRender.current) renderScene();
+      const queued = remoteQueue.current.splice(0);
+      void (async () => {
+        for (const payload of queued) await applyRemote(payload);
+      })().catch((e) => onSave('error', e.message));
+    }
     resetSurfaceGesture();
+    if (editAfterGesture) {
+      beginTextEditing(editAfterGesture);
+      return;
+    }
     if (gesture.kind !== 'figure') return;
     const point = viewportCoordsToSceneCoords(event, editor.getAppState());
     const end: [number, number] = [point.x, point.y];
@@ -2797,20 +2984,29 @@ function PageEditor({
         }
       }}
       onDoubleClickCapture={(event) => {
-        if (!editor || !(event.target instanceof HTMLCanvasElement)) return;
-        const hit = canvasHit(
-          editor.getSceneElements(),
-          viewportCoordsToSceneCoords(event, editor.getAppState()),
-          6 / editor.getAppState().zoom.value,
-        );
-        if (hit?.locked) {
-          event.preventDefault();
-          event.stopPropagation();
-        } else if (hit && (textModel(hit) || hit.customData?.sticker)) {
-          event.preventDefault();
-          event.stopPropagation();
+        if (
+          !editor ||
+          !(event.target instanceof HTMLCanvasElement || event.target === surface.current) ||
+          readOnly ||
+          previewScene.current ||
+          editor.getAppState().activeTool.type !== 'selection'
+        )
+          return;
+        if (editingRef.current) return;
+        const point = viewportCoordsToSceneCoords(event, editor.getAppState()),
+          hit = movableHit(editor.getSceneElements(), point, 4 / editor.getAppState().zoom.value);
+        event.preventDefault();
+        event.stopPropagation();
+        if (hit && !hit.locked && (textModel(hit) || hit.customData?.sticker))
           beginTextEditing(hit);
-        }
+        else if (!hit)
+          editText({
+            id: crypto.randomUUID(),
+            x: point.x,
+            y: point.y,
+            angle: 0,
+            model: { ...defaultText },
+          });
       }}
     >
       <div

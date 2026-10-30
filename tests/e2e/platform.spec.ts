@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { readFile } from 'node:fs/promises';
 import { PDFDocument } from 'pdf-lib';
 import { loginTeacher, selectPresentation } from './helpers';
@@ -84,9 +84,14 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   await expect(page.getByRole('button', { name: 'Русский язык', exact: true })).toHaveCount(0);
   await expect(page.locator('.pages-sidebar')).toHaveCount(0);
   await page.getByRole('button', { name: 'Текст', exact: true }).click();
+  await page.mouse.click(600, 360);
+  await page
+    .getByRole('textbox', { name: 'Текст на доске', exact: true })
+    .fill('Текстовый блок преподавателя');
+  await page.getByRole('textbox', { name: 'Текст на доске', exact: true }).press('Control+Enter');
   await expect(page.locator('.save-state')).toContainText('Сохранено');
   const scene1 = await (await request.get(`/api/v1/pages/${pageId}/snapshot`)).json();
-  expect(scene1.scene.some((e: any) => e.type === 'text')).toBeTruthy();
+  expect(scene1.scene.some((e: any) => e.customData?.richText)).toBeTruthy();
   const guest = await browser.newContext(),
     guestPage = await guest.newPage();
   guestPage.on('pageerror', (e) => errors.push(e.message));
@@ -96,6 +101,12 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
   await expect(guestPage.locator('.excalidraw')).toBeVisible();
   await expect(page.locator('.board-participant-count')).toContainText('2');
   await guestPage.getByRole('button', { name: 'Заметка', exact: true }).click();
+  await guestPage
+    .getByRole('textbox', { name: 'Текст на доске', exact: true })
+    .fill('Идея, вопрос или важный вывод.');
+  await guestPage
+    .getByRole('textbox', { name: 'Текст на доске', exact: true })
+    .press('Control+Enter');
   await expect(guestPage.locator('.save-state')).toContainText('Сохранено');
   await expect
     .poll(async () => {
@@ -156,6 +167,13 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
     .toBeTruthy();
   await guest.setOffline(true);
   await guestPage.getByRole('button', { name: 'Текст', exact: true }).click();
+  await guestPage.mouse.click(850, 500);
+  await guestPage
+    .getByRole('textbox', { name: 'Текст на доске', exact: true })
+    .fill('Локальная мысль ученика');
+  await guestPage
+    .getByRole('textbox', { name: 'Текст на доске', exact: true })
+    .press('Control+Enter');
   await expect(guestPage.locator('.save-state')).toContainText('Нет связи');
   await guest.setOffline(false);
   await expect(guestPage.locator('.save-state')).toContainText('Сохранено');

@@ -165,3 +165,51 @@ export function duplicateObjects(
     };
   });
 }
+
+/** Body hits are for moving. Native handles outside the geometry remain available for resizing. */
+export function movableHit(elements: readonly any[], point: Point, tolerance: number) {
+  const hit = canvasHit(elements, point, tolerance);
+  if (hit) return hit;
+  for (let i = elements.length - 1; i >= 0; i--) {
+    const e = elements[i];
+    if (e.isDeleted || e.locked) continue;
+    const closed =
+      ['rectangle', 'ellipse', 'diamond'].includes(e.type) ||
+      (e.type === 'line' &&
+        e.points?.length > 2 &&
+        e.points[0][0] === e.points.at(-1)[0] &&
+        e.points[0][1] === e.points.at(-1)[1]);
+    if (closed && hitCanvasElement({ ...e, backgroundColor: '#fff' }, point, 0)) return e;
+  }
+  return undefined;
+}
+export function movingObjectIds(elements: readonly any[], selection: readonly string[]) {
+  const ids = new Set(selection);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const e of elements) {
+      if (e.isDeleted || ids.has(e.id)) continue;
+      const owner =
+        e.customData?.stickerAnnotation?.stickerId ||
+        e.customData?.slideAnnotation?.presentationId ||
+        e.customData?.richText?.containerId ||
+        e.containerId;
+      if (owner && ids.has(owner)) {
+        ids.add(e.id);
+        added = true;
+      }
+    }
+  }
+  return ids;
+}
+export function translateObjects(
+  elements: readonly any[],
+  ids: ReadonlySet<string>,
+  dx: number,
+  dy: number,
+) {
+  return elements.map((e) =>
+    !e.isDeleted && ids.has(e.id) ? { ...e, x: e.x + dx, y: e.y + dy } : e,
+  );
+}

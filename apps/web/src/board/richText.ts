@@ -97,17 +97,10 @@ export async function renderText(model: TextModel) {
   const canvas = document.createElement('canvas'),
     ctx = canvas.getContext('2d')!;
   ctx.font = textFont(m);
-  const padding = Math.max(3, m.fontSize * 0.16),
-    maxWidth = Math.max(40, Math.min(1800, m.maxWidth || 760)),
-    lines = wrapText(m.text, (s) => ctx.measureText(s).width, maxWidth),
-    width =
-      Math.max(
-        20,
-        m.maxWidth ? maxWidth : Math.max(...lines.map((s) => ctx.measureText(s).width)),
-      ) +
-      padding * 2,
-    lineHeight = m.fontSize * 1.35,
-    height = lines.length * lineHeight + padding * 2,
+  const { padding, lines, width, height, lineHeight } = textLayout(
+      m,
+      (s) => ctx.measureText(s).width,
+    ),
     scale = Math.min(3, 8000 / Math.max(width, height), Math.sqrt(16_000_000 / (width * height)));
   canvas.width = Math.ceil(width * scale);
   canvas.height = Math.ceil(height * scale);
@@ -136,4 +129,34 @@ export async function renderText(model: TextModel) {
     }
   });
   return { width, height, dataURL: canvas.toDataURL('image/png'), model: m };
+}
+
+// Editing masks are local rendering state. Never store them or send them to another participant.
+export function unmaskText(elements: readonly any[]) {
+  return elements.map((e) => {
+    const opacity = e.customData?.osnovaEditingOpacity;
+    if (typeof opacity !== 'number') return e;
+    const customData = { ...e.customData };
+    delete customData.osnovaEditingOpacity;
+    return { ...e, opacity, customData };
+  });
+}
+export function editingProjection(elements: readonly any[], id?: string) {
+  return elements.map((e) =>
+    e.id === id && !e.isDeleted
+      ? {
+          ...e,
+          opacity: 0,
+          customData: { ...e.customData, osnovaEditingOpacity: e.opacity ?? 100 },
+        }
+      : e,
+  );
+}
+export function textLayout(model: TextModel, measure: (s: string) => number) {
+  const padding = Math.max(3, model.fontSize * 0.16),
+    maxWidth = Math.max(40, Math.min(1800, model.maxWidth || 760));
+  const lines = wrapText(model.text, measure, maxWidth),
+    width = Math.max(20, model.maxWidth ? maxWidth : Math.max(...lines.map(measure))) + padding * 2;
+  const lineHeight = model.fontSize * 1.35;
+  return { padding, lines, width, height: lines.length * lineHeight + padding * 2, lineHeight };
 }

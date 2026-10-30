@@ -37,11 +37,9 @@ export const lineKinds = [
   { id: 'dashed', name: 'Пунктирная', hint: 'Дополнение' },
   { id: 'dashdot', name: 'Штрихпунктирная', hint: 'Обстоятельство' },
   { id: 'dotted', name: 'Точки', hint: 'Вспомогательная линия' },
-  { id: 'root', name: 'Дуга', hint: 'Корень слова' },
-  { id: 'prefix', name: 'Скобка', hint: 'Приставка' },
-  { id: 'suffix', name: 'Уголок', hint: 'Суффикс' },
 ] as const;
-export type LineKind = (typeof lineKinds)[number]['id'];
+// Historical scenes can still contain the removed morpheme marks.
+export type LineKind = (typeof lineKinds)[number]['id'] | 'root' | 'prefix' | 'suffix';
 export const figures = [
   { id: 'rectangle', name: 'Прямоугольник', space: false },
   { id: 'square', name: 'Квадрат', space: false },
