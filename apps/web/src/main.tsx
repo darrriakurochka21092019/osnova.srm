@@ -42,13 +42,14 @@ import './surface.css';
 import Login from './auth/Login';
 import { TeacherHome } from './pages/TeacherHome';
 import { SchedulePage } from './pages/SchedulePage';
+import { StudentsPage } from './pages/StudentsPage';
 import './lesson/lesson.css';
 import { Brand, AccessExpired } from './lesson/shared';
 import { api, date } from './api';
 import { AppStore, useApp } from './store';
 import { Avatar, Badge, Busy, Button, Field, FormError, Modal, SaveButton } from './ui';
 import type { User } from '../../../packages/contracts';
-import { Dashboard, BoardsPage, StudentsPage, StudentDetail } from './pages/workspace';
+import { Dashboard, BoardsPage, StudentDetail } from './pages/workspace';
 import {
   HomeworkPage,
   HomeworkDetail,
@@ -220,6 +221,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     navigate = useNavigate();
   const home = user.role === 'teacher' && location.pathname === '/';
   const schedule = location.pathname === '/schedule';
+  const pupils = location.pathname === '/students';
   useEffect(() => {
     refresh()
       .then(() => {
@@ -284,7 +286,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     );
   return (
     <div
-      className={`app-layout ${home || schedule ? 'home-shell' : ''} ${schedule ? 'schedule-shell' : ''}`}
+      className={`app-layout ${home || schedule || pupils ? 'home-shell' : ''} ${schedule ? 'schedule-shell' : ''} ${pupils ? 'students-shell' : ''}`}
     >
       {mobile && <div className="sidebar-scrim" onClick={() => setMobile(false)} />}
       <aside className={`sidebar ${mobile ? 'open' : ''}`}>
@@ -370,7 +372,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
             <Menu size={21} />
           </button>
           <div className={`breadcrumb ${schedule ? 'schedule-breadcrumb' : ''}`}>
-            {home ? (
+            {home || pupils ? (
               <ChevronLeft size={20} aria-hidden="true" />
             ) : (
               <>
@@ -419,7 +421,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
               <Bell size={21} />
               {unread > 0 && <i />}
             </Link>
-            {home || schedule ? (
+            {home || schedule || pupils ? (
               <Link to="/settings" className="topbar-profile" aria-label="Открыть профиль">
                 <Avatar name={user.name} small />
                 <ChevronDown size={17} />
