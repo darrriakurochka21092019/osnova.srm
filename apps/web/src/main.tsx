@@ -41,19 +41,14 @@ import './styles.css';
 import './surface.css';
 import Login from './auth/Login';
 import { TeacherHome } from './pages/TeacherHome';
+import { SchedulePage } from './pages/SchedulePage';
 import './lesson/lesson.css';
 import { Brand, AccessExpired } from './lesson/shared';
 import { api, date } from './api';
 import { AppStore, useApp } from './store';
 import { Avatar, Badge, Busy, Button, Field, FormError, Modal, SaveButton } from './ui';
 import type { User } from '../../../packages/contracts';
-import {
-  Dashboard,
-  BoardsPage,
-  StudentsPage,
-  StudentDetail,
-  SchedulePage,
-} from './pages/workspace';
+import { Dashboard, BoardsPage, StudentsPage, StudentDetail } from './pages/workspace';
 import {
   HomeworkPage,
   HomeworkDetail,
@@ -224,6 +219,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
   const location = useLocation(),
     navigate = useNavigate();
   const home = user.role === 'teacher' && location.pathname === '/';
+  const schedule = location.pathname === '/schedule';
   useEffect(() => {
     refresh()
       .then(() => {
@@ -287,7 +283,9 @@ function Shell({ onLogout }: { onLogout: () => void }) {
       </Routes>
     );
   return (
-    <div className={`app-layout ${home ? 'home-shell' : ''}`}>
+    <div
+      className={`app-layout ${home || schedule ? 'home-shell' : ''} ${schedule ? 'schedule-shell' : ''}`}
+    >
       {mobile && <div className="sidebar-scrim" onClick={() => setMobile(false)} />}
       <aside className={`sidebar ${mobile ? 'open' : ''}`}>
         <Link to="/" className="brand-link">
@@ -371,7 +369,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           >
             <Menu size={21} />
           </button>
-          <div className="breadcrumb">
+          <div className={`breadcrumb ${schedule ? 'schedule-breadcrumb' : ''}`}>
             {home ? (
               <ChevronLeft size={20} aria-hidden="true" />
             ) : (
@@ -421,7 +419,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
               <Bell size={21} />
               {unread > 0 && <i />}
             </Link>
-            {home ? (
+            {home || schedule ? (
               <Link to="/settings" className="topbar-profile" aria-label="Открыть профиль">
                 <Avatar name={user.name} small />
                 <ChevronDown size={17} />
