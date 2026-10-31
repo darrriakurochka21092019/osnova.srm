@@ -198,8 +198,6 @@ export const recordSchemas = {
     title,
     month: z.string().regex(/^\d{4}-\d{2}$/),
     summary: text,
-    strengths: text.default(''),
-    focus: text.default(''),
     plan: text,
     shared: z.boolean().default(false),
   }),

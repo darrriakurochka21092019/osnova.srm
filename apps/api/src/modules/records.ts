@@ -37,14 +37,6 @@ export async function notify(
   path: string,
   dedupeKey?: string,
 ) {
-  const preferences = (await ctx.db.query('SELECT settings FROM users WHERE id=$1', [recipientId]))
-    .rows[0]?.settings?.notifications;
-  const category = /^\/(lesson|board|schedule)/.test(path)
-    ? 'lessons'
-    : path.startsWith('/homework')
-      ? 'homework'
-      : 'organization';
-  if (preferences?.enabled === false || preferences?.[category] === false) return;
   const data = {
     title,
     message,
@@ -477,23 +469,6 @@ export async function recordRoutes(ctx: Context) {
         data.title,
         `/homework/${id}`,
         `reviewed:${id}:${updated.updated_at}`,
-      );
-    if (
-      kind === 'homework' &&
-      req.user.role === 'teacher' &&
-      data.status === 'assigned' &&
-      data.feedback.trim() &&
-      uid &&
-      (record.data.status !== 'assigned' || record.data.feedback !== data.feedback)
-    )
-      await notify(
-        ctx,
-        record.owner_id,
-        uid,
-        'Работа возвращена на доработку',
-        data.title,
-        `/homework/${id}`,
-        `revision:${id}:${updated.updated_at}`,
       );
     if (kind === 'lesson') {
       if (req.user.role === 'student')

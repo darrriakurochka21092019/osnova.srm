@@ -118,51 +118,46 @@ export async function fileRoutes({ app, db, config }: Context) {
       await db.query('SELECT id,name,mime,size,excalidraw_id FROM files WHERE board_id=$1', [id])
     ).rows;
   });
-  for (const metadata of [false, true])
-    app.get(`/api/v1/files/:id${metadata ? '/meta' : ''}`, async (req, reply) => {
-      const id = z.uuid().parse((req.params as any).id);
-      const f = (
+  app.get('/api/v1/files/:id', async (req, reply) => {
+    const id = z.uuid().parse((req.params as any).id);
+    const f = (
+      await db.query(
+        'SELECT f.*,u.owner_id AS user_owner FROM files f JOIN users u ON u.id=f.owner_id WHERE f.id=$1',
+        [id],
+      )
+    ).rows[0];
+    requireThat(f, 404, 'Файл не найден');
+    let allowed =
+      f.owner_id === req.user.id || (req.user.role === 'teacher' && f.user_owner === req.user.id);
+    if (!allowed && f.board_id) {
+      await boardAccess(db, req.user, f.board_id);
+      allowed = true;
+    }
+    if (!allowed && req.user.role === 'student') {
+      const records = (
         await db.query(
-          'SELECT f.*,u.owner_id AS user_owner FROM files f JOIN users u ON u.id=f.owner_id WHERE f.id=$1',
-          [id],
+          "SELECT * FROM records WHERE owner_id=$1 AND (data->'fileIds' ? $2 OR data->'answerFileIds' ? $2)",
+          [req.user.owner_id, id],
         )
-      ).rows[0];
-      requireThat(f, 404, 'Файл не найден');
-      let allowed =
-        f.owner_id === req.user.id || (req.user.role === 'teacher' && f.user_owner === req.user.id);
-      if (!allowed && f.board_id) {
-        await boardAccess(db, req.user, f.board_id);
-        allowed = true;
-      }
-      if (!allowed && req.user.role === 'student') {
-        const records = (
-          await db.query(
-            "SELECT * FROM records WHERE owner_id=$1 AND (data->'fileIds' ? $2 OR data->'answerFileIds' ? $2)",
-            [req.user.owner_id, id],
-          )
-        ).rows;
-        for (const r of records)
-          if (await canReadRecord(db, req.user, r)) {
-            allowed = true;
-            break;
-          }
-      }
-      requireThat(allowed, 404, 'Файл не найден или доступ закрыт');
-      if (metadata) {
-        reply.header('Cache-Control', 'private, no-store');
-        return { id: f.id, name: f.name, mime: f.mime, size: f.size };
-      }
-      await audit(db, req.user.id, 'file.read', id);
-      const data = await readFile(path.join(config.dataDir, 'files', f.storage_key));
-      reply
-        .type(f.mime)
-        .header('Cache-Control', 'private, no-store')
-        .header('X-Content-Type-Options', 'nosniff');
-      const download = (req.query as any).download === '1';
-      reply.header(
-        'Content-Disposition',
-        `${download ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(f.name)}`,
-      );
-      return reply.send(data);
-    });
+      ).rows;
+      for (const r of records)
+        if (await canReadRecord(db, req.user, r)) {
+          allowed = true;
+          break;
+        }
+    }
+    requireThat(allowed, 404, 'Файл не найден или доступ закрыт');
+    await audit(db, req.user.id, 'file.read', id);
+    const data = await readFile(path.join(config.dataDir, 'files', f.storage_key));
+    reply
+      .type(f.mime)
+      .header('Cache-Control', 'private, no-store')
+      .header('X-Content-Type-Options', 'nosniff');
+    const download = (req.query as any).download === '1';
+    reply.header(
+      'Content-Disposition',
+      `${download ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+    );
+    return reply.send(data);
+  });
 }

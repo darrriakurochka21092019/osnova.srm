@@ -133,14 +133,6 @@ export async function authRoutes({ app, db, config, io }: Context) {
         settings: z
           .object({
             reminders: z.boolean().optional(),
-            notifications: z
-              .object({
-                enabled: z.boolean(),
-                lessons: z.boolean(),
-                homework: z.boolean(),
-                organization: z.boolean(),
-              })
-              .optional(),
             reminderMinutes: z.number().int().min(5).max(1440).optional(),
             quietStart: z
               .string()

@@ -207,7 +207,7 @@ test('teacher home shows real counters, lesson preparation, recent files and wor
   await expect(page.getByRole('button', { name: 'Ручка', exact: true })).toBeEnabled();
   await page.goto('/');
   await page.getByRole('button', { name: 'Начать урок', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Причастный оборот', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Готовы начать?', exact: true })).toBeVisible();
   await page.goto('/');
   await page.getByRole('button', { name: /Подготовить урок.*Открыть общую/ }).click();
   await page.getByRole('combobox', { name: 'Ученик', exact: true }).selectOption(students[1].id);
