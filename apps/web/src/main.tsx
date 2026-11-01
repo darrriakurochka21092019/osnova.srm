@@ -43,13 +43,14 @@ import Login from './auth/Login';
 import { TeacherHome } from './pages/TeacherHome';
 import { SchedulePage } from './pages/SchedulePage';
 import { StudentsPage } from './pages/StudentsPage';
+import { StudentDetailPage } from './pages/StudentDetailPage';
 import './lesson/lesson.css';
 import { Brand, AccessExpired } from './lesson/shared';
 import { api, date } from './api';
 import { AppStore, useApp } from './store';
 import { Avatar, Badge, Busy, Button, Field, FormError, Modal, SaveButton } from './ui';
 import type { User } from '../../../packages/contracts';
-import { Dashboard, BoardsPage, StudentDetail } from './pages/workspace';
+import { Dashboard, BoardsPage } from './pages/workspace';
 import {
   HomeworkPage,
   HomeworkDetail,
@@ -211,7 +212,7 @@ const studentPaths = [
   '/notifications',
 ];
 function Shell({ onLogout }: { onLogout: () => void }) {
-  const { user, records, refresh, toast } = useApp(),
+  const { user, students, records, refresh, toast } = useApp(),
     [ready, setReady] = useState(false),
     [error, setError] = useState(''),
     [mobile, setMobile] = useState(false),
@@ -222,6 +223,9 @@ function Shell({ onLogout }: { onLogout: () => void }) {
   const home = user.role === 'teacher' && location.pathname === '/';
   const schedule = location.pathname === '/schedule';
   const pupils = location.pathname === '/students';
+  const detailId = location.pathname.match(/^\/students\/([^/]+)$/)?.[1];
+  const detail = Boolean(detailId) && user.role === 'teacher';
+  const detailStudent = detail ? students.find((student) => student.id === detailId) : undefined;
   useEffect(() => {
     refresh()
       .then(() => {
@@ -286,7 +290,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     );
   return (
     <div
-      className={`app-layout ${home || schedule || pupils ? 'home-shell' : ''} ${schedule ? 'schedule-shell' : ''} ${pupils ? 'students-shell' : ''}`}
+      className={`app-layout ${home || schedule || pupils || detail ? 'home-shell' : ''} ${schedule ? 'schedule-shell' : ''} ${pupils ? 'students-shell' : ''} ${detail ? 'student-profile-shell' : ''}`}
     >
       {mobile && <div className="sidebar-scrim" onClick={() => setMobile(false)} />}
       <aside className={`sidebar ${mobile ? 'open' : ''}`}>
@@ -372,14 +376,22 @@ function Shell({ onLogout }: { onLogout: () => void }) {
             <Menu size={21} />
           </button>
           <div className={`breadcrumb ${schedule ? 'schedule-breadcrumb' : ''}`}>
-            {home || pupils ? (
+            {detail ? (
+              <>
+                <Link to="/students" className="sp-breadcrumb-link" aria-label="К списку учеников">
+                  <ChevronLeft size={20} />
+                  <span>Ученики</span>
+                </Link>
+                <span>/</span>
+              </>
+            ) : home || pupils ? (
               <ChevronLeft size={20} aria-hidden="true" />
             ) : (
               <>
                 Моё пространство <ChevronRight size={14} />
               </>
             )}
-            <strong>{title}</strong>
+            <strong>{detail ? detailStudent?.name || 'Карточка ученика' : title}</strong>
           </div>
           <div className="topbar-actions">
             <div className="global-search">
@@ -421,7 +433,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
               <Bell size={21} />
               {unread > 0 && <i />}
             </Link>
-            {home || schedule || pupils ? (
+            {home || schedule || pupils || detail ? (
               <Link to="/settings" className="topbar-profile" aria-label="Открыть профиль">
                 <Avatar name={user.name} small />
                 <ChevronDown size={17} />
@@ -473,7 +485,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
             {user.role === 'teacher' && (
               <>
                 <Route path="/students" element={<StudentsPage />} />
-                <Route path="/students/:id" element={<StudentDetail />} />
+                <Route path="/students/:id" element={<StudentDetailPage key={detailId} />} />
                 <Route path="/reports" element={<ReportsPage />} />
                 <Route path="/finances" element={<FinancesPage />} />
                 <Route path="/documents" element={<DocumentsPage />} />
