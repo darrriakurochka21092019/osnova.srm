@@ -563,14 +563,12 @@ test('teacher and student complete a lesson, collaborate, recover offline edits,
     '/help',
   ];
   for (const width of [1440, 390]) {
-    // Each route mounts the whole workspace store. Give the second pass its own session
-    // so a minute of deliberately dense API traffic does not exhaust the real rate limit.
-    if (width === 390) {
-      const login = await teacher.request.post('http://127.0.0.1:4173/api/v1/auth/login', {
-        data: { email: 'teacher@example.test', password: 'teacher-test-password' },
-      });
-      expect(login.ok()).toBeTruthy();
-    }
+    // Each route mounts the whole workspace store. Give each pass its own session
+    // so the preceding collaboration checks and route sweep do not exhaust the real rate limit.
+    const login = await teacher.request.post('http://127.0.0.1:4173/api/v1/auth/login', {
+      data: { email: 'teacher@example.test', password: 'teacher-test-password' },
+    });
+    expect(login.ok()).toBeTruthy();
     await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
     for (const route of routes) {
       await page.goto(route);

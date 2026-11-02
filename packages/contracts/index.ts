@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { curriculumSchema, type StudentCurriculum } from './curriculum';
+export { curriculumSchema, type StudentCurriculum, type CurriculumTopic } from './curriculum';
 
 export type Role = 'teacher' | 'student' | 'guest';
 export type User = {
@@ -18,6 +20,7 @@ export type Student = {
   classroom_id?: string;
   goal: string;
   program: string;
+  curriculum?: StudentCurriculum | null;
   status: 'active' | 'paused';
   color: string;
   created_at: string;
@@ -147,6 +150,7 @@ export const studentSchema = z.object({
   subject: z.string().trim().max(100).default(''),
   goal: text.default(''),
   program: text.default(''),
+  curriculum: curriculumSchema.nullable().default(null),
   status: z.enum(['active', 'paused']).default('active'),
   color: z.enum(['purple', 'mint', 'peach', 'blue']).default('purple'),
 });

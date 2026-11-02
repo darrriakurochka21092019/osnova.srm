@@ -106,6 +106,7 @@ export async function migrate(db: Database) {
     ALTER TABLE boards ADD COLUMN IF NOT EXISTS canvas_page_id UUID;
     ALTER TABLE boards ADD COLUMN IF NOT EXISTS background TEXT NOT NULL DEFAULT 'white';
     ALTER TABLE students ADD COLUMN IF NOT EXISTS subject TEXT NOT NULL DEFAULT '';
+    ALTER TABLE students ADD COLUMN IF NOT EXISTS curriculum JSONB;
     CREATE TABLE IF NOT EXISTS classrooms (
       id UUID PRIMARY KEY, owner_id UUID NOT NULL REFERENCES users(id), board_id UUID UNIQUE NOT NULL REFERENCES boards(id),
       member_key TEXT NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('individual','group')),

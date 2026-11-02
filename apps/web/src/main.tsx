@@ -223,7 +223,8 @@ function Shell({ onLogout }: { onLogout: () => void }) {
   const home = user.role === 'teacher' && location.pathname === '/';
   const schedule = location.pathname === '/schedule';
   const pupils = location.pathname === '/students';
-  const detailId = location.pathname.match(/^\/students\/([^/]+)$/)?.[1];
+  const detailId = location.pathname.match(/^\/students\/([^/]+)(?:\/program)?$/)?.[1];
+  const programDetail = Boolean(detailId) && location.pathname.endsWith('/program');
   const detail = Boolean(detailId) && user.role === 'teacher';
   const detailStudent = detail ? students.find((student) => student.id === detailId) : undefined;
   useEffect(() => {
@@ -383,6 +384,14 @@ function Shell({ onLogout }: { onLogout: () => void }) {
                   <span>Ученики</span>
                 </Link>
                 <span>/</span>
+                {programDetail && (
+                  <>
+                    <Link to={`/students/${detailId}`} className="ip-breadcrumb-student">
+                      {detailStudent?.name || 'Ученик'}
+                    </Link>
+                    <span>/</span>
+                  </>
+                )}
               </>
             ) : home || pupils ? (
               <ChevronLeft size={20} aria-hidden="true" />
@@ -391,7 +400,13 @@ function Shell({ onLogout }: { onLogout: () => void }) {
                 Моё пространство <ChevronRight size={14} />
               </>
             )}
-            <strong>{detail ? detailStudent?.name || 'Карточка ученика' : title}</strong>
+            <strong>
+              {detail
+                ? programDetail
+                  ? 'Программа'
+                  : detailStudent?.name || 'Карточка ученика'
+                : title}
+            </strong>
           </div>
           <div className="topbar-actions">
             <div className="global-search">
@@ -486,6 +501,10 @@ function Shell({ onLogout }: { onLogout: () => void }) {
               <>
                 <Route path="/students" element={<StudentsPage />} />
                 <Route path="/students/:id" element={<StudentDetailPage key={detailId} />} />
+                <Route
+                  path="/students/:id/program"
+                  element={<StudentDetailPage key={detailId} />}
+                />
                 <Route path="/reports" element={<ReportsPage />} />
                 <Route path="/finances" element={<FinancesPage />} />
                 <Route path="/documents" element={<DocumentsPage />} />

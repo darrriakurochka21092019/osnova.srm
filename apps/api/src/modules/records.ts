@@ -7,6 +7,7 @@ import {
   type Entry,
   type User,
   type RecordKind,
+  type StudentCurriculum,
 } from '../../../../packages/contracts';
 import type { Context } from '../app';
 import type { Queryable } from '../db';
@@ -74,11 +75,35 @@ export async function validateFileRefs(db: Queryable, user: User, ids: string[])
     );
   }
 }
+function curriculumMaterials(program?: StudentCurriculum | null) {
+  return [
+    ...new Set(
+      program?.blocks.flatMap((block) => block.topics.flatMap((topic) => topic.materialIds)) || [],
+    ),
+  ];
+}
+async function validateCurriculumMaterials(
+  db: Queryable,
+  owner: string,
+  program: StudentCurriculum | null,
+  previous?: StudentCurriculum | null,
+) {
+  const existing = new Set(curriculumMaterials(previous));
+  const ids = curriculumMaterials(program).filter((id) => !existing.has(id));
+  if (!ids.length) return;
+  const rows = (
+    await db.query(
+      "SELECT id FROM records WHERE owner_id=$1 AND kind='material' AND id=ANY($2::uuid[])",
+      [owner, ids],
+    )
+  ).rows;
+  requireThat(rows.length === ids.length, 403, 'Материал недоступен для добавления в программу');
+}
 export async function recordRoutes(ctx: Context) {
   const { app, db, config, io } = ctx;
   app.get('/api/v1/students', async (req) => {
     if (req.user.role === 'guest') return [];
-    return (
+    const rows = (
       await db.query(
         `SELECT s.*,c.id AS classroom_id FROM students s LEFT JOIN classrooms c ON c.owner_id=s.owner_id AND c.member_key=s.id::text WHERE s.owner_id=$1 AND ($2::boolean OR s.user_id=$3) ORDER BY s.created_at`,
         [
@@ -88,10 +113,43 @@ export async function recordRoutes(ctx: Context) {
         ],
       )
     ).rows;
+    if (req.user.role === 'teacher') return rows;
+    // Keep private and other pupils' material references out of the pupil response.
+    for (const row of rows) {
+      const ids = curriculumMaterials(row.curriculum);
+      if (!ids.length) continue;
+      const materials = (
+        await db.query(
+          "SELECT id,data FROM records WHERE owner_id=$1 AND kind='material' AND id=ANY($2::uuid[])",
+          [req.user.owner_id, ids],
+        )
+      ).rows;
+      const readable = new Set(
+        materials
+          .filter(
+            (material) =>
+              material.data.shared &&
+              (!material.data.studentIds?.length || material.data.studentIds.includes(row.id)),
+          )
+          .map((material) => material.id),
+      );
+      row.curriculum = {
+        ...row.curriculum,
+        blocks: row.curriculum.blocks.map((block: any) => ({
+          ...block,
+          topics: block.topics.map((topic: any) => ({
+            ...topic,
+            materialIds: topic.materialIds.filter((id: string) => readable.has(id)),
+          })),
+        })),
+      };
+    }
+    return rows;
   });
   app.post('/api/v1/students', async (req) => {
     requireThat(req.user.role === 'teacher');
     const input = studentSchema.parse(req.body);
+    await validateCurriculumMaterials(db, req.user.id, input.curriculum);
     const id = randomUUID(),
       uid = randomUUID();
     return db.transaction(async (tx) => {
@@ -102,7 +160,7 @@ export async function recordRoutes(ctx: Context) {
       ]);
       const student = (
         await tx.query(
-          'INSERT INTO students(id,owner_id,user_id,name,grade,goal,program,status,color,subject) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',
+          'INSERT INTO students(id,owner_id,user_id,name,grade,goal,program,status,color,subject,curriculum) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
           [
             id,
             req.user.id,
@@ -114,6 +172,7 @@ export async function recordRoutes(ctx: Context) {
             input.status,
             input.color,
             input.subject,
+            input.curriculum ? JSON.stringify(input.curriculum) : null,
           ],
         )
       ).rows[0];
@@ -130,6 +189,7 @@ export async function recordRoutes(ctx: Context) {
       ...current,
       ...z.record(z.string(), z.unknown()).parse(req.body),
     });
+    await validateCurriculumMaterials(db, req.user.id, input.curriculum, current.curriculum);
     const row = await db.transaction(async (tx) => {
       await tx.query('UPDATE users SET active=$2 WHERE id=$1', [
         current.user_id,
@@ -137,7 +197,7 @@ export async function recordRoutes(ctx: Context) {
       ]);
       return (
         await tx.query(
-          'UPDATE students SET name=$2,grade=$3,goal=$4,program=$5,status=$6,color=$7,subject=$8 WHERE id=$1 RETURNING *',
+          'UPDATE students SET name=$2,grade=$3,goal=$4,program=$5,status=$6,color=$7,subject=$8,curriculum=$9 WHERE id=$1 RETURNING *',
           [
             id,
             input.name,
@@ -147,6 +207,7 @@ export async function recordRoutes(ctx: Context) {
             input.status,
             input.color,
             input.subject,
+            input.curriculum ? JSON.stringify(input.curriculum) : null,
           ],
         )
       ).rows[0];

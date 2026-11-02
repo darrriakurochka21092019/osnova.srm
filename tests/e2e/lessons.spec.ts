@@ -28,10 +28,11 @@ test('one student link covers preparation, waiting, a shared lesson, comments, s
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto('/students');
   await page.getByRole('button', { name: 'Добавить ученика', exact: true }).first().click();
-  await page.getByLabel('Имя ученика', { exact: true }).fill('Демо Алексей');
-  await page.getByLabel('Класс', { exact: true }).fill('8 класс');
-  await page.getByLabel('Предмет', { exact: true }).fill('Математика');
-  await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  const studentForm = page.getByRole('dialog', { name: 'Новый ученик' });
+  await studentForm.getByLabel('Имя ученика', { exact: true }).fill('Демо Алексей');
+  await studentForm.getByLabel('Класс', { exact: true }).fill('8 класс');
+  await studentForm.getByLabel('Предмет', { exact: true }).fill('Математика');
+  await studentForm.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   const students = await (await request.get('/api/v1/students')).json();
   const student = students.find((s: any) => s.name === 'Демо Алексей');
